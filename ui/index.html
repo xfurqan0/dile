@@ -5,44 +5,103 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Dile</title>
     <!--
-      The review panel of docs/PROJECT.md §3 — a 680 x 64 non-activating strip with a level
-      meter, an elapsed time, an editable transcript and four actions — is built in WP5.
-      WP0 ships the shell it will be built into, and the window is created hidden.
+      The review panel of docs/PROJECT.md §3 — "Konsept B, Kart", the layout the maintainer
+      chose on 2026-09-13: a 680 x 64 rounded card, the product's waveform mark on the left
+      with the state colour in its accent bar, pills for strictness and "raw", text buttons
+      for the four actions, and a thin line for the auto-transfer countdown. The result state
+      grows to three lines and then scrolls inside itself.
 
-      There is deliberately no build step and no npm here. nazar-tray bundles its panel with
-      esbuild because it has a panel; this repository has empty markup, and a `npm ci` in CI
-      to compile nothing would be minutes of runner time and a lockfile to keep current for
-      no output. `frontendDist` therefore points at this directory as static assets. When
-      WP5 writes real TypeScript, this becomes ui/src + ui/build.mjs and `frontendDist`
-      moves to ui/dist — the same shape as nazar-tray, arrived at when there is something to
-      compile.
+      There is deliberately no build step and no npm, which is the same decision
+      ui/settings/ carries: one document, one stylesheet, one script, and `frontendDist`
+      points at ui/ as static assets.
 
-      Every visible word comes from locales/<lang>.json through the same lookup the Rust
-      side uses. There is no text in this file, and crates/dile-app/tests/i18n.rs is what
-      keeps it that way.
+      **There is no text in this file.** Every visible word is a `data-i18n` attribute
+      resolved at run time from locales/<lang>.json, and crates/dile-app/tests/i18n.rs fails
+      the build on a sentence typed into the markup or the script. The check and the cross in
+      front of two of the buttons are `content` in panel.css, for the same reason: they are
+      decoration rather than words, and a translator has no business being asked about them.
+
+      **The moving parts are SVG attributes, not styles.** The content security policy is
+      `style-src 'self'`, so this document contains no `style` attribute and the script sets
+      none: the level meter and the countdown line are `<rect>` elements whose `y`, `height`
+      and `width` attributes are written directly, which is markup rather than CSS — beyond
+      the policy's reach, and cheaper per frame than a restyle.
+
+      `lang` is set by the script once the catalogue arrives; it starts as `en` because the
+      fallback catalogue is English.
     -->
-    <style>
-      :root {
-        color-scheme: dark;
-      }
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        background: #24262b;
-        color: #e6e6e6;
-        font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-        overflow: hidden;
-        user-select: none;
-      }
-      #panel {
-        display: flex;
-        align-items: center;
-        height: 100%;
-      }
-    </style>
+    <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
-    <main id="panel" aria-live="polite"></main>
+    <svg aria-hidden="true" class="defs">
+      <symbol id="mark" viewBox="0 0 64 64">
+        <rect width="64" height="64" rx="14" fill="#1c1f24" />
+        <g fill="#eceef2">
+          <rect x="9" y="27" width="4" height="10" rx="2" />
+          <rect x="16" y="23" width="4" height="18" rx="2" />
+          <rect x="23" y="17" width="4" height="30" rx="2" />
+          <rect x="37" y="17" width="4" height="30" rx="2" />
+          <rect x="44" y="23" width="4" height="18" rx="2" />
+          <rect x="51" y="27" width="4" height="10" rx="2" />
+        </g>
+        <rect x="30" y="13" width="4" height="38" rx="2" fill="currentColor" />
+      </symbol>
+    </svg>
+
+    <main id="card" class="card" data-state="idle" aria-live="polite">
+      <div class="row" id="row">
+        <svg class="mark" id="mark" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+          <use href="#mark" />
+        </svg>
+
+        <div class="stack grow" id="stack">
+          <span class="title" id="title"></span>
+          <span class="sub" id="sub"></span>
+        </div>
+
+        <div
+          class="text grow"
+          id="text"
+          contenteditable="plaintext-only"
+          spellcheck="false"
+          hidden
+        ></div>
+
+        <svg
+          class="meter"
+          id="meter"
+          viewBox="0 0 58 22"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          hidden
+        ></svg>
+
+        <span class="num" id="elapsed"></span>
+        <span class="target" id="target" hidden></span>
+
+        <button class="action cancel" id="cancel-live" type="button" hidden></button>
+      </div>
+
+      <div class="foot" id="foot" hidden>
+        <div class="pills" id="levels" role="radiogroup">
+          <button class="pill" type="button" role="radio" data-level="light" data-i18n="settings.cleanup.light"></button>
+          <button class="pill" type="button" role="radio" data-level="medium" data-i18n="settings.cleanup.medium"></button>
+          <button class="pill" type="button" role="radio" data-level="strict" data-i18n="settings.cleanup.strict"></button>
+        </div>
+        <button class="pill" id="raw" type="button" aria-pressed="false" data-i18n="panel.pill.raw"></button>
+
+        <svg class="countdown" id="countdown" viewBox="0 0 100 2" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="countdown-track" x="0" y="0" width="100" height="2" rx="1" />
+          <rect class="countdown-fill" id="countdown-fill" x="0" y="0" width="100" height="2" rx="1" />
+        </svg>
+
+        <button class="action primary" id="transfer" type="button" data-i18n="panel.action.transfer"></button>
+        <button class="action" id="copy" type="button" data-i18n="panel.action.copy"></button>
+        <button class="action cancel" id="cancel" type="button" data-i18n="panel.action.cancel"></button>
+        <button class="action" id="rerecord" type="button" data-i18n="panel.action.rerecord"></button>
+      </div>
+    </main>
+
+    <script src="panel.js"></script>
   </body>
 </html>

@@ -4,9 +4,9 @@
 //! today: put an icon in the system tray, install the global hotkey, open the microphone,
 //! record for as long as the chord is held, and hand the buffer to an engine running in a
 //! process of its own — which transcribes it, passes it through the Turkish cleanup rules and
-//! logs the result. Everything about that is now a setting a person can change while it runs.
-//! What is missing is the last step of the product: somewhere for that text to *go*, which is
-//! WP5b's panel and paste.
+//! shows the result in a panel the user can read, fix or cancel before it is pasted into
+//! whatever they were typing in, with their own clipboard given back afterwards. Everything
+//! about that is a setting a person can change while it runs. The product loop is closed.
 //!
 //! | Behaviour | Package |
 //! |---|---|
@@ -14,14 +14,16 @@
 //! | The engine in its own process, the Vulkan probe, the model downloader | **WP3, done** |
 //! | Turkish cleanup, hallucination filter, dictionary | **WP4, done** |
 //! | Settings file, settings window, dictionary editing, autostart | **WP5a, done** |
-//! | The review panel and paste with clipboard restore | WP5b |
+//! | The review panel and paste with clipboard restore | **WP5b, done** |
 //! | Installer, winget, signing preparation | WP7 |
 //!
 //! **No window is shown at start**, and that is a product decision rather than an oversight.
 //! Dile has no main window: the panel of `docs/PROJECT.md` §3 appears when the user speaks and
 //! hides itself again, and the settings window is built the first time somebody asks for it.
 //! A window that flashes on start-up is the first thing users complain about in a tray
-//! application.
+//! application. The panel window *exists* from the first frame — it is declared in
+//! `tauri.conf.json`, created hidden and non-activating — because a window built at the moment
+//! somebody starts speaking would miss the first half-second of the level meter.
 //!
 //! **Three failures, treated differently.** A global keyboard hook that will not install is
 //! fatal: every one of Dile's features begins with a key press, so a tray icon that cannot
@@ -39,14 +41,21 @@
 
 // A tray app has no console. Kept in debug builds so `cargo tauri dev` still prints.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![forbid(unsafe_code)]
+// `deny` rather than `forbid`, and `src/win32/` is the reason: WP5b's paste has no safe
+// wrapper anywhere in the stack, and `forbid` cannot be lifted even by the module that needs
+// it. Every other module in this crate is still unsafe-free, and `win32`'s own documentation
+// says what the exception buys and where its boundary is.
+#![deny(unsafe_code)]
 
 mod engine;
 mod i18n;
+mod panel;
+mod paste;
 mod session;
 mod settings;
 mod tray;
 mod ui;
+mod win32;
 
 use std::sync::{Arc, RwLock};
 
@@ -90,6 +99,17 @@ fn main() {
             settings::commands::capture_hotkey,
             settings::commands::open_models_dir,
             settings::commands::close_settings,
+            panel::commands::panel_context,
+            panel::commands::panel_resize,
+            panel::commands::panel_take_focus,
+            panel::commands::panel_release_focus,
+            panel::commands::panel_edited,
+            panel::commands::panel_transfer,
+            panel::commands::panel_copy,
+            panel::commands::panel_cancel,
+            panel::commands::panel_rerecord,
+            panel::commands::panel_close,
+            panel::commands::panel_reclean,
         ])
         .setup(|app| {
             // One settings document for the whole process, read once. Every value the
@@ -140,11 +160,19 @@ fn main() {
             // says nothing.
             apply_autostart(app.handle(), settings.ui.autostart);
 
+            // The panel comes before the engine and before the hook, because both of them
+            // can reach it within milliseconds of starting: a dictation with nowhere to
+            // appear would be the one failure this package exists to remove. Building it also
+            // starts the clipboard's own thread, which is what makes the paste possible.
+            let review = panel::Panel::new(app.handle(), store.clone(), ui.clone());
+            app.manage(Arc::clone(&review));
+
             // The engine comes up on its own thread and may spend a long time doing it — a
             // consent dialog, a download, a cold Vulkan probe. Nothing below waits for it,
             // because a tray application that will not respond to its hotkey until a
             // gigabyte has arrived is one nobody would leave running.
-            let engine = engine::EngineClient::start(ui.clone(), store.clone());
+            let engine =
+                engine::EngineClient::start(ui.clone(), store.clone(), Arc::clone(&review));
             // Handed to the run loop below, which is the only thing that knows when the
             // application is closing, and to the settings window's engine group.
             app.manage(engine.clone());
@@ -178,12 +206,23 @@ fn main() {
 
             // The hook is installed last, so a failure has an icon to be reported next to —
             // and so the first state the user sees is the one the application is in.
-            session::start(ui, store, engine)?;
+            session::start(ui, store, engine, Arc::clone(&review))?;
 
             // **Debug builds only.** There is no way to click a tray menu from a script, so
             // this is how the settings window gets opened by one — a screenshot for a report,
             // or a hand check that the window still lays out after a change. A release build
             // does not contain the code that reads it.
+            // **Debug builds only**, and the same reason as the switch below it: the four
+            // panel states cannot be reached from a script, because reaching them means
+            // speaking into a microphone. `DILE_OPEN_PANEL=result` renders one with sample
+            // text so it can be looked at and screenshotted.
+            #[cfg(debug_assertions)]
+            if let Ok(state) = std::env::var("DILE_OPEN_PANEL")
+                && !state.trim().is_empty()
+            {
+                panel::debug_open(&review, state.trim());
+            }
+
             #[cfg(debug_assertions)]
             if let Ok(group) = std::env::var("DILE_OPEN_SETTINGS")
                 && !group.trim().is_empty()

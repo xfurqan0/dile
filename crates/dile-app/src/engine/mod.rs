@@ -46,6 +46,7 @@ use dile_engine_proto::Device;
 use serde::Serialize;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+use crate::panel::Panel;
 use crate::settings::SettingsStore;
 use crate::tray::Status;
 use crate::ui::{EVENT_ENGINE, Ui};
@@ -98,10 +99,10 @@ impl EngineClient {
     /// client, because the alternative is an application that refuses to start over
     /// something the user can fix later.
     #[must_use]
-    pub fn start(ui: Ui, store: SettingsStore) -> Self {
+    pub fn start(ui: Ui, store: SettingsStore, panel: Arc<Panel>) -> Self {
         let queue = Arc::new(Queue::default());
         let status = Arc::new(Mutex::new(EngineSnapshot::default()));
-        let supervisor = Supervisor::new(ui, store, Arc::clone(&queue), Arc::clone(&status));
+        let supervisor = Supervisor::new(ui, store, panel, Arc::clone(&queue), Arc::clone(&status));
 
         let spawned = thread::Builder::new()
             .name("dile-engine".to_owned())
@@ -303,6 +304,8 @@ struct Supervisor {
     store: SettingsStore,
     /// What the settings window is told when it asks.
     status: Arc<Mutex<EngineSnapshot>>,
+    /// Where a finished dictation goes. See [`Supervisor::deliver`].
+    panel: Arc<Panel>,
     /// CPU threads for the engine; 0 leaves it to the runtime.
     ///
     /// Zero is right on the Vulkan tier, where almost nothing runs on the CPU, and it is
@@ -328,6 +331,7 @@ impl Supervisor {
     fn new(
         ui: Ui,
         store: SettingsStore,
+        panel: Arc<Panel>,
         queue: Arc<Queue>,
         status: Arc<Mutex<EngineSnapshot>>,
     ) -> Self {
@@ -336,6 +340,7 @@ impl Supervisor {
             queue,
             store,
             status,
+            panel,
             threads: 0,
             tier: None,
             model_file: None,
@@ -846,7 +851,7 @@ impl Supervisor {
                     strictness.as_str(),
                 );
                 self.restarts = 0;
-                self.deliver(&cleaned);
+                self.deliver(&raw, &cleaned);
             }
             Err(HostError::Refused(reason)) => {
                 // The engine is alive and said no — an empty buffer, a model that was
@@ -865,17 +870,25 @@ impl Supervisor {
         self.ui.rest();
     }
 
-    /// Where a finished dictation leaves WP3.
+    /// Where a finished dictation leaves the engine and becomes a thing on a screen.
     ///
-    /// **WP5 replaces the body of this function** with the review panel: the text goes into
-    /// the strip, the user gets their 1.5 s to cancel or edit, and then it is pasted into
-    /// whatever had focus. Everything in front of it is finished — the text is cleaned,
-    /// Turkish-cased and dictionary-corrected — so that package is a window and a paste
-    /// rather than a pipeline.
-    fn deliver(&self, cleaned: &str) {
-        if cleaned.is_empty() {
+    /// The seam WP3 left open and WP5b closed. Everything in front of it is finished — the
+    /// text is cleaned, Turkish-cased and dictionary-corrected — so what happens here is a
+    /// window and a paste rather than a pipeline.
+    ///
+    /// **Both halves go over.** `cleaned` is what the panel shows and transfers; `raw` is what
+    /// the "ham" pill reveals and what the strictness pills re-run the rules against, because
+    /// re-cleaning a cleaned sentence would apply every rule twice.
+    ///
+    /// A recording the engine heard nothing in never reaches the panel: there is nothing to
+    /// review, and a card that appeared to say so would be one more thing to dismiss.
+    fn deliver(&self, raw: &str, cleaned: &str) {
+        if cleaned.trim().is_empty() {
             log::info!("the engine heard nothing in that recording");
+            self.panel.close();
+            return;
         }
+        self.panel.show_result(raw, cleaned);
     }
 
     // ------------------------------------------------------------------ the tier, again

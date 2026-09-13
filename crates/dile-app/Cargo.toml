@@ -75,3 +75,25 @@ sys-locale = "0.3.0"
 # `HKCU\...\Run`. The plugin is the supported way to write it from a Tauri application, and
 # it is applied from Rust rather than from the webview: see `capabilities/settings.json`.
 tauri-plugin-autostart = "2"
+
+# WP5b: the paste. Four things have no safe wrapper anywhere in the Tauri stack — the
+# clipboard with a *delayed render* receipt, the foreground window and the program behind it,
+# the monitor that window is on, and a synthetic key chord — and all four are in `src/win32/`,
+# which is the only module in this crate where `unsafe` is allowed (`main.rs` says `deny`
+# rather than `forbid` for exactly that reason).
+#
+# The version is Tauri's own: `tauri`, `tao` and `wry` are all on `windows` 0.61, so this
+# adds no second copy of a crate that is already compiled into the binary. `arboard` was
+# evaluated for the clipboard half and cannot do delayed rendering — see
+# `src/win32/clipboard.rs`, which is where the decision is written down.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

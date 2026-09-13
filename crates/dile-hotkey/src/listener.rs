@@ -130,15 +130,33 @@ enum Command {
 #[derive(Debug)]
 pub struct HotkeyListener {
     actions: Receiver<Emitted>,
-    commands: Sender<Command>,
+    remote: Remote,
     running: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// The half of a listener another thread may hold.
+///
+/// The listener itself belongs to whoever owns the recording — in Dile that is the session
+/// thread, which blocks on [`HotkeyListener::actions`] and replaces the whole listener when
+/// the chord changes. The review panel is not on that thread and cannot be: it has to arm and
+/// disarm its three keys the moment a window appears and disappears, and going through a
+/// thread that is blocked on a channel would put a fifth of a second between Esc becoming
+/// meaningful and Esc being blocked.
+///
+/// So this is the small, clonable, `Send` part: a channel to the listener's thread and a
+/// handle on the set its hook reads. It cannot start or stop anything, and a listener that
+/// has been replaced leaves its remotes talking to a thread that has ended — which they
+/// report as [`Error::NotRunning`] rather than pretending.
+#[derive(Clone, Debug)]
+pub struct Remote {
+    commands: Sender<Command>,
     /// The set the hook reads on every key event, or `None` when the hook is observe-only.
     ///
-    /// Held so that [`HotkeyListener::panel_keys`] can add and remove the panel's three
-    /// entries without taking the hook down and putting another one up — a reinstall would
-    /// drop every key held at that moment, which during a dictation is the dictation.
+    /// Held so that [`Remote::panel_keys`] can add and remove the panel's three entries
+    /// without taking the hook down and putting another one up — a reinstall would drop every
+    /// key held at that moment, which during a dictation is the dictation.
     blocking: Option<BlockingHotkeys>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl HotkeyListener {
@@ -188,9 +206,11 @@ impl HotkeyListener {
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 actions: action_rx,
-                commands: command_tx,
+                remote: Remote {
+                    commands: command_tx,
+                    blocking: shared,
+                },
                 running,
-                blocking: shared,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -210,11 +230,46 @@ impl HotkeyListener {
         &self.actions
     }
 
+    /// The part of this listener another thread may hold. See [`Remote`].
+    #[must_use]
+    pub fn remote(&self) -> Remote {
+        self.remote.clone()
+    }
+
     /// Tell the machine to forget every key it believes is held.
     ///
     /// The application calls this when the window manager took focus away mid-press, since
     /// the key-up may never arrive. Any resulting action comes back through
     /// [`HotkeyListener::actions`] like every other.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotRunning`] if the listener thread has already ended.
+    pub fn reset(&self) -> Result<(), Error> {
+        self.remote.reset()
+    }
+
+    /// Hand Enter, Esc and `Ctrl+C` to the review panel. See [`Remote::panel_keys`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotRunning`] if the listener thread has already ended.
+    pub fn panel_keys(&self, enabled: bool) -> Result<(), Error> {
+        self.remote.panel_keys(enabled)
+    }
+
+    /// Start a recording again from the panel. See [`Remote::rerecord`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotRunning`] if the listener thread has already ended.
+    pub fn rerecord(&self) -> Result<(), Error> {
+        self.remote.rerecord()
+    }
+}
+
+impl Remote {
+    /// Tell the machine to forget every key it believes is held.
     ///
     /// # Errors
     ///

@@ -31,6 +31,14 @@
 //! presses. That is also why the loop waits with a timeout instead of blocking for ever on
 //! the action channel: a change made while nobody is dictating has to arrive anyway.
 //!
+//! **The panel is opened here and closed almost everywhere else.** The session is the only
+//! thing that knows when a dictation begins, so it is the only thing that can capture the
+//! window the dictation is aimed at — `docs/PROJECT.md` §3 wants the target taken at the
+//! moment the hotkey went down, not at the moment the text comes back, because by then the
+//! user may well be looking at something else. Everything after that — the result, the
+//! countdown, the paste — belongs to `crate::panel`, and the three keys the panel claims come
+//! back through this same action channel as [`Action::PanelTransfer`] and its two siblings.
+//!
 //! **Silence never reaches an engine.** M0 found every canned hallucination in the robustness
 //! set sitting on the same ten seconds of applause (`docs/PROJECT.md`, log 2026-09-09), so a
 //! recording whose VAD summary says there was no speech is dropped here and the tray says
@@ -49,6 +57,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::engine::EngineClient;
+use crate::panel::Panel;
 use crate::settings::{Settings, SettingsStore};
 use crate::tray::Status;
 use crate::ui::{EVENT_LEVEL, Ui};
@@ -131,9 +140,13 @@ pub fn start(
     ui: Ui,
     store: SettingsStore,
     engine: EngineClient,
+    panel: Arc<Panel>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let settings = store.get();
     let listener = HotkeyListener::spawn(settings.hotkey_config())?;
+    // The panel arms and disarms its three keys on whichever hook is installed right now,
+    // and this is that hook. Re-attached in `reapply` every time the chord changes.
+    panel.attach(listener.remote());
     log::info!(
         "hotkey hook installed: {} in {:?} mode, second key {}",
         settings.hotkey.chord,
@@ -154,7 +167,7 @@ pub fn start(
 
     thread::Builder::new()
         .name("dile-session".to_owned())
-        .spawn(move || run(&ui, &store, &engine, listener, &pending))?;
+        .spawn(move || run(&ui, &store, &engine, &panel, listener, &pending))?;
 
     Ok(())
 }
@@ -164,17 +177,29 @@ fn run(
     ui: &Ui,
     store: &SettingsStore,
     engine: &EngineClient,
+    panel: &Arc<Panel>,
     mut listener: HotkeyListener,
     pending: &AtomicBool,
 ) {
     let elapsed = Elapsed::new();
     let mut settings = store.get();
     let mut capture = open_capture(ui, &settings, &elapsed);
+    // Whether audio is being captured right now, which is what tells Esc apart: while a
+    // recording is running it cancels the recording, and after one it cancels the panel.
+    let mut recording = false;
 
     loop {
         if pending.swap(false, Ordering::SeqCst) {
             let next = store.get();
-            reapply(ui, &settings, &next, &elapsed, &mut listener, &mut capture);
+            reapply(
+                ui,
+                panel,
+                &settings,
+                &next,
+                &elapsed,
+                &mut listener,
+                &mut capture,
+            );
             settings = next;
         }
 
@@ -199,6 +224,11 @@ fn run(
                 match open.start() {
                     Ok(()) => {
                         elapsed.start();
+                        recording = true;
+                        // Before the panel is shown, because what it captures is whatever had
+                        // the focus when the key went down — and the panel is about to be one
+                        // more window on the screen, even if it is one that never takes it.
+                        panel.begin();
                         ui.show(Status::Recording);
                     }
                     Err(error) => {
@@ -211,6 +241,7 @@ fn run(
 
             Action::StopRecording => {
                 elapsed.stop();
+                recording = false;
                 let Some(open) = capture.as_ref() else {
                     continue;
                 };
@@ -219,11 +250,12 @@ fn run(
                     // key already down, or the cap took the recording and the buffer has
                     // already been handed over — gives an empty recording rather than an
                     // error, and nothing is owed to anybody.
-                    Ok(recording) if recording.is_empty() => {
+                    Ok(taken) if taken.is_empty() => {
                         log::debug!("a release arrived with nothing recorded behind it");
+                        panel.close();
                         ui.rest();
                     }
-                    Ok(recording) => finish(ui, engine, open.overruns(), &recording),
+                    Ok(taken) => finish(ui, engine, open.overruns(), &taken),
                     Err(error) => {
                         log::error!("the recording could not be taken: {error}");
                         capture = None;
@@ -234,20 +266,48 @@ fn run(
 
             Action::DiscardRecording => {
                 elapsed.stop();
+                recording = false;
                 if let Some(open) = capture.as_ref()
                     && let Err(error) = open.discard()
                 {
                     log::error!("the recording could not be discarded: {error}");
                     capture = None;
                 }
+                // Closed rather than left showing a recording that is not happening. When the
+                // discard was a tap, `OpenPanelIdle` is the very next action in this channel
+                // and puts the hint up in its place.
+                panel.close();
                 ui.rest();
             }
 
-            // TODO(WP5b): show the panel, empty, so a tap proves the hotkey works without
-            // dictating anything (docs/PROJECT.md §3, Hotkey).
             Action::OpenPanelIdle => {
-                log::info!("a tap: the panel would open idle here");
+                log::info!("a tap: the panel opens with the hint and nothing in it");
+                panel.open_idle();
             }
+
+            // The three the panel claims while it is on screen. They arrive here rather than
+            // in the webview because the panel never has the keyboard: see `crate::panel`.
+            Action::PanelTransfer => transfer(panel),
+
+            Action::PanelCancel => {
+                if recording {
+                    // Esc during a dictation cancels the dictation, not the window. The
+                    // release that follows finds an empty capture and says nothing.
+                    log::info!("Esc during a recording: the audio is thrown away");
+                    elapsed.stop();
+                    recording = false;
+                    if let Some(open) = capture.as_ref()
+                        && let Err(error) = open.discard()
+                    {
+                        log::error!("the recording could not be discarded: {error}");
+                        capture = None;
+                    }
+                    ui.rest();
+                }
+                panel.cancel();
+            }
+
+            Action::PanelCopy => panel.copy(None),
         }
     }
 
@@ -266,6 +326,7 @@ fn run(
 /// chord that parses and an operating system that declined anyway.
 fn reapply(
     ui: &Ui,
+    panel: &Arc<Panel>,
     before: &Settings,
     after: &Settings,
     elapsed: &Elapsed,
@@ -278,6 +339,9 @@ fn reapply(
                 // The assignment drops the previous listener, which takes its hook down and
                 // joins its thread. New first would mean two hooks answering one press.
                 *listener = fresh;
+                // The panel's remote pointed at the hook that has just gone; without this its
+                // three keys would be armed on a thread that has ended.
+                panel.attach(listener.remote());
                 log::info!(
                     "the hotkey is now {} in {:?} mode, second key {}",
                     after.hotkey.chord,
@@ -302,6 +366,22 @@ fn reapply(
             after.capture.cap_secs,
             after.capture.pre_roll_ms
         );
+    }
+}
+
+/// Paste what is in the panel, on a thread of its own.
+///
+/// `Panel::transfer` waits for the target window to come forward and then for the clipboard
+/// receipt — up to a couple of seconds — and this is the thread the next key press arrives
+/// on. A transfer that blocked here would make Enter the one action after which Dile stops
+/// hearing its own hotkey.
+fn transfer(panel: &Arc<Panel>) {
+    let panel = Arc::clone(panel);
+    let spawned = thread::Builder::new()
+        .name("dile-paste".to_owned())
+        .spawn(move || panel.transfer(None));
+    if let Err(error) = spawned {
+        log::error!("the paste thread could not be started: {error}");
     }
 }
 

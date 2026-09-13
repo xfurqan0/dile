@@ -337,6 +337,21 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
         // string anybody is shown: translating it would mean the expected words no longer
         // matched the committed WAV, which is the one thing that must never drift.
         "Bugün hava çok güzel ve deniz sakin.",
+        // The three multi-word entries of WP5b's friendly-name map (`paste.rs`). These are
+        // **other people's product names**, and a product name is the same word in every
+        // language — "Visual Studio" is not translated into Turkish by Microsoft either. The
+        // sentence they sit in *is* translated: `panel.target` is "→ {app}" in `locales/`,
+        // and this is the {app}. Every other name in that map is a single word and needs no
+        // entry here.
+        "VS Code",
+        "Windows Terminal",
+        "Visual Studio",
+        // The sample sentence `DILE_OPEN_PANEL=result` renders (`panel.rs`). It is inside
+        // `#[cfg(debug_assertions)]`, so no release build contains it, and it is a stand-in
+        // for an engine's output rather than a string this application says: its whole job
+        // is to look like something a person dictated, fillers and all, so that a screenshot
+        // of the result state shows what the cleanup actually did to it.
+        "eee kubernetes cluster'ını bugün kurdum webhookları yarın sertifika yenilemesini cert manager'a bıraktım",
     ]
     .into();
 

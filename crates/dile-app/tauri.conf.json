@@ -14,17 +14,19 @@
       {
         "label": "panel",
         "title": "Dile",
-        "width": 680,
-        "height": 64,
+        "width": 708,
+        "height": 92,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
         "decorations": false,
+        "transparent": true,
         "alwaysOnTop": true,
+        "focusable": false,
         "skipTaskbar": true,
         "visible": false,
         "focus": false,
-        "shadow": true,
+        "shadow": false,
         "center": false
       }
     ],

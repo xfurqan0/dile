@@ -69,7 +69,7 @@ pub mod listener;
 pub use capture::{Capture, next_chord};
 
 #[cfg(target_os = "windows")]
-pub use listener::{Emitted, HotkeyListener};
+pub use listener::{Emitted, HotkeyListener, Remote};
 
 /// The version of this crate, for the settings page and bug reports.
 #[must_use]

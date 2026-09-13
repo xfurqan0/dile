@@ -717,6 +717,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "thiserror 2.0.20",
  "ureq",
+ "windows 0.61.3",
 ]
 
 [[package]]

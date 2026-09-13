@@ -1,0 +1,319 @@
+/*
+  The review panel, in the product palette — "Konsept B, Kart" as the maintainer approved it
+  on 2026-09-13.
+
+  Dark grey only in v1. Dile has one look and this is it; the settings window borrows the same
+  variables. No web font: the content security policy is `default-src 'self'`, and a panel that
+  is on screen for a second and a half is not worth an exception to it.
+
+  **The window is transparent and the card is not.** `tauri.conf.json` gives this window no
+  decorations and no opaque background, and a fourteen-pixel gutter is left around the card on
+  every side so its own shadow has somewhere to fall. That gutter is why the window is 708 px
+  wide for a 680 px card: the mockup's measurement is the card's, and the shadow is what makes
+  a floating strip read as floating rather than as a hole cut in the screen.
+
+  **Nothing here is set from JavaScript.** The moving parts — the twelve meter bars and the
+  countdown line — are SVG geometry attributes, so `style-src 'self'` stays as strict as it
+  was written and no frame costs a restyle.
+*/
+
+:root {
+  color-scheme: dark;
+
+  --p-0: #15171b;
+  --p-1: #1c1f24;
+  --p-2: #22252b;
+  --p-3: #292d35;
+  --p-4: #333841;
+  --p-line: #343942;
+  --p-line-2: #434956;
+  --p-txt: #eceef2;
+  --p-dim: #a2aab6;
+  --p-dim-2: #757d8a;
+  --p-green: #78d6a0;
+  --p-red: #e5484d;
+  --p-amber: #f5a524;
+
+  --gutter: 14px;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--p-txt);
+  font: 13px/1.45 var(--sans);
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The symbol definitions, which are never drawn where they are declared. */
+.defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+/* ---------------------------------------------------------------------------- the card */
+
+.card {
+  position: absolute;
+  top: var(--gutter);
+  left: var(--gutter);
+  right: var(--gutter);
+  min-height: 64px;
+  padding: 0 16px;
+  background: var(--p-2);
+  border: 1px solid var(--p-line);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 4%) inset,
+    0 12px 28px rgb(0 0 0 / 42%);
+  overflow: hidden;
+}
+
+/* The result state is the one that breathes: the row grows with the text and the controls
+   move to a line of their own, which is the mockup's 680 x 92 and 680 x 112. */
+.card[data-state="result"] {
+  padding: 13px 16px 15px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+}
+
+.card[data-state="result"] .row {
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------- the mark */
+
+.mark {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: block;
+  color: var(--p-green);
+}
+
+.card[data-state="recording"] .mark {
+  color: var(--p-red);
+}
+
+.card[data-state="working"] .mark {
+  color: var(--p-amber);
+}
+
+.card[data-state="gone"] .mark,
+.card[data-state="stalled"] .mark {
+  color: var(--p-dim-2);
+}
+
+/* ------------------------------------------------------------------------ the two lines */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub {
+  font-size: 11.5px;
+  color: var(--p-dim-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--p-dim);
+  white-space: nowrap;
+  flex: none;
+}
+
+.target {
+  font-size: 11.5px;
+  color: var(--p-dim-2);
+  flex: none;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+
+/* --------------------------------------------------------------------- the level meter */
+
+.meter {
+  width: 58px;
+  height: 22px;
+  flex: none;
+}
+
+.meter rect {
+  fill: var(--p-dim-2);
+}
+
+.card[data-state="recording"] .meter rect {
+  fill: var(--p-red);
+}
+
+/* ----------------------------------------------------------------------- the transcript */
+
+.text {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--p-txt);
+  user-select: text;
+  cursor: text;
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Three lines of 14 px text, and then it scrolls inside itself rather than pushing the
+     card down the screen. The 2026-09-13 decision, in one declaration. */
+  max-height: calc(14px * 1.45 * 3);
+  overflow-y: auto;
+}
+
+.text::-webkit-scrollbar {
+  width: 6px;
+}
+
+.text::-webkit-scrollbar-thumb {
+  background: var(--p-4);
+  border-radius: 3px;
+}
+
+/* The raw transcript is shown, not edited: re-cleaning an edited raw would mean applying
+   every rule to something no engine ever wrote. */
+.text[contenteditable="false"] {
+  color: var(--p-dim);
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------------- the controls */
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pills {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.pill {
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--p-line-2);
+  color: var(--p-dim);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pill:hover {
+  color: var(--p-txt);
+}
+
+.pill[aria-checked="true"],
+.pill[aria-pressed="true"] {
+  background: var(--p-4);
+  border-color: var(--p-4);
+  color: var(--p-txt);
+  font-weight: 600;
+}
+
+.action {
+  background: none;
+  border: 0;
+  color: var(--p-dim);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+.action:hover {
+  background: var(--p-3);
+  color: var(--p-txt);
+}
+
+.action.primary {
+  color: var(--p-green);
+  font-weight: 600;
+}
+
+/* Decoration rather than words: a check and a cross belong to the drawing, and putting them
+   in locales/ would be asking a translator about a glyph. */
+.action.primary::before {
+  content: "\2713\00a0";
+}
+
+.action.cancel::before {
+  content: "\2717\00a0";
+}
+
+/* ------------------------------------------------------------------- the countdown line */
+
+.countdown {
+  flex: 1;
+  min-width: 24px;
+  height: 2px;
+}
+
+.countdown-track {
+  fill: var(--p-line);
+}
+
+.countdown-fill {
+  fill: var(--p-green);
+}
+
+/* Switched off, cancelled, or a state with nothing to count down to: the line goes, and the
+   gap it leaves is what pushes the buttons to the right of the card the way the mockup has
+   them. */
+.countdown[hidden] {
+  display: none !important;
+}
+
+.foot .spacer {
+  flex: 1;
+}
