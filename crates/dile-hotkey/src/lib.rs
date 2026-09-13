@@ -48,11 +48,17 @@ pub use config::{
     DEFAULT_HOLD_TAKEOVER_MS, DEFAULT_MAX_HOLD_MS, DEFAULT_PRESS_THRESHOLD_MS, HotkeyConfig, Mode,
 };
 pub use error::Error;
-pub use keys::{Chord, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
+pub use keys::{Chord, ChordParseError, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
 pub use state::{Action, Actions, Event, HotkeyMachine};
 
 #[cfg(target_os = "windows")]
+pub mod capture;
+
+#[cfg(target_os = "windows")]
 pub mod listener;
+
+#[cfg(target_os = "windows")]
+pub use capture::{Capture, next_chord};
 
 #[cfg(target_os = "windows")]
 pub use listener::{Emitted, HotkeyListener};
