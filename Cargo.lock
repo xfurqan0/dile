@@ -733,6 +733,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dile-cli"
+version = "0.1.0"
+dependencies = [
+ "dile-capture",
+ "dile-client",
+ "dile-core",
+ "dile-engine-proto",
+ "hound",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "dile-client"
 version = "0.1.0"
 dependencies = [

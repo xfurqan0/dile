@@ -23,7 +23,13 @@ use crate::{SAMPLE_RATE, SourceSpec};
 const CHUNK_FRAMES: usize = 256;
 
 /// Interleaved native audio in, 16 kHz mono out.
-pub(crate) struct Converter {
+///
+/// **Two callers, one converter.** The capture pipeline drives it from the worker thread
+/// that drains the audio ring; `dile transcribe` drives it over a WAV file, so a recording
+/// somebody already has goes through exactly the same downmix and the same resampler as one
+/// spoken into the microphone. That is the point of it being public: a second resampler in
+/// the command line would be a second answer to the same question.
+pub struct Converter {
     channels: usize,
     /// A frame that arrived split across two callbacks.
     partial: Vec<f32>,
@@ -46,7 +52,7 @@ struct Resampling {
 
 impl Converter {
     /// A converter for a device running at `spec`.
-    pub(crate) fn new(spec: SourceSpec) -> Result<Self, Error> {
+    pub fn new(spec: SourceSpec) -> Result<Self, Error> {
         let channels = usize::from(spec.channels).max(1);
         let resampler = if spec.sample_rate == SAMPLE_RATE {
             // The pass-through case is a real case, not an optimisation: plenty of USB
@@ -86,7 +92,7 @@ impl Converter {
     ///
     /// Whatever does not make a whole resampler chunk stays inside and comes out on a later
     /// call, so the stream is continuous across callback boundaries.
-    pub(crate) fn process(&mut self, interleaved: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
+    pub fn process(&mut self, interleaved: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
         self.downmix(interleaved);
 
         let Some(resampling) = self.resampler.as_mut() else {

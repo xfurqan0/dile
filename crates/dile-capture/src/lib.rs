@@ -89,6 +89,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 
+pub use crate::convert::Converter;
 pub use crate::device::DeviceInfo;
 pub use crate::error::Error;
 pub use crate::level::{LevelEvent, MIN_DBFS};

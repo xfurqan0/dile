@@ -1,0 +1,36 @@
+[package]
+name = "dile-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "dile transcribe: one recording in, the text Dile would have pasted out."
+
+[lints.rust]
+missing_docs = "warn"
+
+# The binary is `dile`, not `dile-cli`. It is what a person types, what the installer puts
+# next to the application, and what `docs/PROJECT.md` §6 WP7 names.
+[[bin]]
+name = "dile"
+path = "src/main.rs"
+
+[dependencies]
+# The version is carried next to the path on purpose: a bare `path` is a wildcard
+# requirement, and `deny.toml` refuses those. It tracks `workspace.package.version`.
+dile-client = { path = "../dile-client", version = "0.1.0" }
+dile-core = { path = "../dile-core", version = "0.1.0" }
+dile-capture = { path = "../dile-capture", version = "0.1.0" }
+dile-engine-proto = { path = "../dile-engine-proto", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+# Reading the WAV. The same crate the probe clip is read with, and the same one the debug
+# build writes `last.wav` with, so a file this command accepts is a file Dile wrote.
+hound = "3.5.1"
+
+# Error types with their message on the variant, as everywhere else in this workspace.
+thiserror = "2"
