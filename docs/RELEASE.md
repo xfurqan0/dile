@@ -28,13 +28,17 @@ gh run list --branch main --limit 3
 
 ## 1. Set the version
 
+**For 0.1.0 this step is a read-back rather than an edit**: nothing has been released, so the
+five files already say `0.1.0`. Check them anyway — the workflow refuses a tag that disagrees
+with them, and finding that out from a red run is worse than finding it out here.
+
 Five files carry it — two manifests and the three winget files.
 
 ```powershell
 # Edit by hand, all in the same commit:
-#   Cargo.toml                       -> [workspace.package] version = "0.2.0"
-#   crates/dile-app/tauri.conf.json  -> "version": "0.2.0"
-#   packaging/winget/*.yaml          -> PackageVersion: 0.2.0  (three files)
+#   Cargo.toml                       -> [workspace.package] version = "0.1.0"
+#   crates/dile-app/tauri.conf.json  -> "version": "0.1.0"
+#   packaging/winget/*.yaml          -> PackageVersion: 0.1.0  (three files)
 
 Select-String -Path Cargo.toml, crates\dile-app\tauri.conf.json -Pattern 'version'
 Select-String -Path packaging\winget\*.yaml -Pattern 'PackageVersion'
@@ -53,7 +57,7 @@ The `Cargo.lock` moves with the version. Let cargo do it rather than editing it:
 ```powershell
 cargo check --workspace --locked   # fails if the lock file is behind
 git add -A
-git commit -m "Release 0.2.0"
+git commit -m "Release 0.1.0"
 ```
 
 ---
@@ -122,7 +126,7 @@ Read the file list out of the package itself:
 
 ```powershell
 # 7-Zip reads an NSIS installer's contents without running it.
-& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\Dile_0.2.0_x64-setup.exe
+& "C:\Program Files\7-Zip\7z.exe" l target\release\bundle\nsis\Dile_0.1.0_x64-setup.exe
 ```
 
 Then install it and look at what landed:
@@ -136,7 +140,7 @@ Get-ChildItem -Recurse "$env:LOCALAPPDATA\Dile" | Select-Object Name, Length
 ## 4. Smoke the installer as a user would
 
 ```powershell
-$setup = "target\release\bundle\nsis\Dile_0.2.0_x64-setup.exe"
+$setup = "target\release\bundle\nsis\Dile_0.1.0_x64-setup.exe"
 
 # Silent, per user, no elevation prompt. /R is what starts it afterwards.
 Start-Process $setup -ArgumentList "/S /R" -Wait
@@ -248,10 +252,10 @@ Also confirm by eye:
 Write the release notes, which the workflow will attach to the draft:
 
 ```powershell
-# docs/release-notes-0.2.0.md -- the CHANGELOG entry, shortened, with the known limits kept
+# docs/release-notes-0.1.0.md -- the CHANGELOG entry, shortened, with the known limits kept
 # rather than buried. 0.1.0's is in the tree as the shape.
 git add -A
-git commit -m "Release notes for 0.2.0"
+git commit -m "Release notes for 0.1.0"
 git push origin main
 ```
 
@@ -262,8 +266,8 @@ git push origin main
 **From here on, nothing is reversible.**
 
 ```powershell
-git tag -a v0.2.0 -m "Dile 0.2.0"
-git push origin v0.2.0
+git tag -a v0.1.0 -m "Dile 0.1.0"
+git push origin v0.1.0
 ```
 
 The tag starts `.github/workflows/release.yml`: it re-runs the whole gate, checks the tag
@@ -274,7 +278,7 @@ a **draft** release with both files attached. It does not publish.
 
 ```powershell
 gh run watch
-gh release view v0.2.0        # a draft, with two assets
+gh release view v0.1.0        # a draft, with two assets
 ```
 
 Take the installer's hash from the release's own `SHA256SUMS` — the one built by the runner,
@@ -284,7 +288,7 @@ not the one on your laptop — and put it in the winget manifest:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\winget-manifest.ps1
 git diff packaging/winget
 winget validate --manifest packaging\winget
-git add packaging/winget && git commit -m "winget: hash for 0.2.0" && git push
+git add packaging/winget && git commit -m "winget: hash for 0.1.0" && git push
 ```
 
 ---
@@ -294,14 +298,14 @@ git add packaging/winget && git commit -m "winget: hash for 0.2.0" && git push
 Read the draft on github.com first — the notes, the two assets, the file names. Then:
 
 ```powershell
-gh release edit v0.2.0 --draft=false
+gh release edit v0.1.0 --draft=false
 ```
 
 Check what a user gets:
 
 ```powershell
-gh release view v0.2.0 --web
-gh attestation verify .\Dile_0.2.0_x64-setup.exe --repo xfurqan0/dile
+gh release view v0.1.0 --web
+gh attestation verify .\Dile_0.1.0_x64-setup.exe --repo xfurqan0/dile
 ```
 
 ---
