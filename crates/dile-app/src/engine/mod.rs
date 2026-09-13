@@ -805,8 +805,11 @@ impl Supervisor {
             log::warn!(
                 "a recording arrived with no engine behind it; nothing was transcribed and nothing crashed"
             );
-            // The session put the tray on `Working` when it handed this over, and nothing
-            // else is going to take it off.
+            // The session put the tray on `Working` when it handed this over, and opened the
+            // panel when the key went down. Nothing else is going to take either of them off,
+            // and a card left saying "working on it" for ever is also a card holding Esc away
+            // from the rest of the machine.
+            self.panel.close();
             self.ui.rest();
             return;
         };
@@ -857,12 +860,14 @@ impl Supervisor {
                 // The engine is alive and said no — an empty buffer, a model that was
                 // unloaded. One dictation lost, no restart.
                 log::error!("the engine refused this dictation: {reason}");
+                self.panel.close();
             }
             Err(error) => {
                 // Timeout, broken pipe or a process that has gone. The reader thread is
                 // already on its way with the crash signal, so the respawn is not started
                 // here; this dictation is simply gone.
                 log::error!("this dictation was lost: {error}");
+                self.panel.close();
             }
         }
 
