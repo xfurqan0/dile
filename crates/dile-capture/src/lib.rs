@@ -459,21 +459,32 @@ fn run(
         };
 
         drain(&mut consumer, &mut pipeline, &levels, &level_drain);
+
+        // **The state is published before the answer, in every arm.** The acknowledgement is
+        // what makes "recording begins now" true for the caller, so everything the caller can
+        // observe the moment it returns has to be true already. Storing the state after the
+        // reply left a window — narrow, and wide enough to lose on a loaded machine — in
+        // which `stop()` had handed back the recording and `state()` still said `Recording`.
+        // Found by the test at the bottom of this file going red on a CI runner, 2026-09-13,
+        // rather than by anybody reading the code.
         match command {
             Command::Start(reply) => {
                 pipeline.start();
+                state.store(pipeline.state() as u8, Ordering::Relaxed);
                 let _ = reply.send(());
             }
             Command::Stop(reply) => {
-                let _ = reply.send(pipeline.stop());
+                let recording = pipeline.stop();
+                state.store(pipeline.state() as u8, Ordering::Relaxed);
+                let _ = reply.send(recording);
             }
             Command::Discard(reply) => {
                 pipeline.discard();
+                state.store(pipeline.state() as u8, Ordering::Relaxed);
                 let _ = reply.send(());
             }
             Command::Shutdown => break,
         }
-        state.store(pipeline.state() as u8, Ordering::Relaxed);
     }
 }
 

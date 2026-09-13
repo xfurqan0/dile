@@ -169,6 +169,16 @@ Nothing has been released. The work packages that get to a first release are in
   it was replaced with is the one the data supports — the dictionary → prompt path and
   Turkish casing and punctuation.
 
+### Fixed
+
+- **`Capture::stop` could return before the state it left behind was visible.** The worker
+  thread published its new state *after* answering the command, so a caller could be handed a
+  finished recording while `state()` still said *Recording*. Narrow enough that it had never
+  been seen locally, wide enough to lose on a CI runner — which is where it turned up. The
+  state is now stored before the reply in every arm, because the acknowledgement is what makes
+  "recording begins now" true for the caller, and everything the caller can observe the moment
+  it returns has to be true already.
+
 ### Known gaps
 
 **The last step.** The text is transcribed and cleaned and then written to the log, because
