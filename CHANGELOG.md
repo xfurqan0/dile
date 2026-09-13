@@ -11,6 +11,35 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Added
 
+- **WP7 — there is something to install.** An NSIS installer that puts Dile in
+  `%LOCALAPPDATA%\Dile` per user with no administrator rights, a winget package, a release
+  workflow that builds it on a GitHub runner from a tag, and a command line.
+  - **Three programs in one installer.** `dile-engine-host` and `dile` are declared as Tauri
+    sidecars (`bundle.externalBin`), which puts them next to the application — the same place
+    the client already looked for the engine, so the lookup did not change when the packaging
+    did. The bundle carries five files and **no weights**: the model is still downloaded on
+    first run, with consent, from a pinned Hugging Face commit.
+  - **`dile transcribe <file.wav> [--json]`, and nothing else.** One command, no daemon and no
+    batch mode — the scope race with dikte's CLI is still declined. It is the same product
+    rather than a second one: it reads the settings window's own `settings.json`, runs the
+    tier this machine's probe decided, loads the same weights, and puts the same dictionary in
+    the decoder's prompt. It will not download a model without `--yes`; without it the
+    question is printed and nothing is fetched. A machine that has never run Dile has never
+    been probed, and it says so rather than choosing a tier of its own.
+  - **`dile-client`, the half of Dile that has no window.** The settings document, the tier
+    record, the model table, the downloader and the engine client moved out of `dile-app` into
+    a crate that links no Tauri, because two programs now need all five and a second copy of
+    any of them would be two products that disagree. A move rather than a rewrite: the three
+    functions that genuinely need an `AppHandle` stayed behind as one-line shims.
+  - **A release workflow that stops at a draft.** On a tag: the whole gate again, the tag
+    checked against both manifests *before* ten minutes of Vulkan shaders, a pinned Vulkan SDK
+    installed and cached on the runner, the installer built, `SHA256SUMS` written, the build
+    provenance attested by GitHub, and a **draft** release created. Publishing it is a
+    person's click, and so is the tag. The SignPath signing job is written and switched off,
+    with the one line that turns it on in a comment above it.
+  - `docs/RELEASE.md`, `docs/CODE_SIGNING.md`, `docs/release-notes-0.1.0.md`,
+    `packaging/winget/` under `xfurqan0.dile`, and a README that says what Dile is, what it
+    measured, what it costs to run and what it does not do.
 - **WP5b — the panel, and the paste that ends a dictation.** The product loop closes here.
   Hold the key, speak, let go: the cleaned text appears in a card at the top of the monitor
   the focused window was on, and 2.5 s later it is in that window with your own clipboard put
@@ -221,6 +250,17 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Changed
 
+- **The auto-transfer countdown is 2.5 s, not 1.5 s.** The hand test WP5b was waiting for
+  passed on Notepad, VS Code, Windows Terminal and a browser field, and asked for exactly one
+  change: 1.5 s is not long enough to read a sentence in before it fires. A default rather than
+  a rule — a `settings.json` that already carries a number keeps it, and the 500–5000 ms range
+  is unchanged.
+- **The bundle is NSIS only.** MSI is dropped: a per-user MSI is awkward, WiX is a second
+  toolchain to download, and one installer is what a release needs.
+- **The sidecars are a build prerequisite now.** `tauri-build` checks `bundle.externalBin` in
+  its build script, so `cargo clippy` and `cargo test` fail without them, not only the bundler.
+  `scripts/build-host.ps1 -Cpu -DebugBuild` is the cheap pair, and it is the first line of
+  `CONTRIBUTING.md` and of `docs/BUILDING.md`'s normal build.
 - **The default engine tier is Vulkan with a CPU fallback, not CPU with a GPU opt-in.** The
   M0 measurements are what changed it: no whisper model is usable on a six-core CPU (even the
   turbo model runs 2.3× slower than real time), and the small models that *are* fast enough
@@ -244,6 +284,16 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Fixed
 
+- **The binaries were carrying the build machine's account name, 182 times.** Every `panic!`,
+  `unwrap()` and `GGML_ASSERT` compiles the source file it came from in as a string literal,
+  which `strip = true` does not remove and which no grep over the working tree can see: it
+  exists only in the artefact. A release build produced **159** copies of
+  `C:\Users\<account>\.cargo\registry\src\…` in `dile.exe` and **23** in
+  `dile-engine-host.exe`, and an installer carrying them was days from being published. Two
+  compilers, two fixes — `--remap-path-prefix` for rustc, and `/d1trimfile:` for MSVC, because
+  ggml is built from source through CMake and no rustc flag reaches it — both passed by
+  `scripts/build-installer.ps1`. `scripts/check-binary-paths.ps1` reads all three binaries
+  back, and the build **deletes the bundle** rather than leave a failing installer on disk.
 - **`Capture::stop` could return before the state it left behind was visible.** The worker
   thread published its new state *after* answering the command, so a caller could be handed a
   finished recording while `state()` still said *Recording*. Narrow enough that it had never
@@ -254,13 +304,14 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Known gaps
 
-**The last step.** The text is transcribed and cleaned and then written to the log, because
-the panel that should receive it is WP5b's, and so is the paste that follows it. The
-dictionary is no longer part of that gap: it has a settings window now, and a term typed into
-it reaches both the decoder's prompt and the cleanup. What is left is somewhere for the
-finished sentence to go.
+**The README has no GIF.** One dictation — hold, speak, the card, the paste — as a screen
+recording, which is a thing a person makes rather than a thing a build produces. The README
+carries a comment where it goes and describes the loop in words until then.
 
-**Packaging.** The engine binary is found beside the application, which is where a build puts
-it; declaring it as a Tauri sidecar so that an installer carries it is WP7's, and until then
-there is nothing to install anyway. CI builds the CPU-only host, because a runner with no GPU
-cannot exercise the other one.
+**The VAD winner is still unmeasured**, so what ships is the relative-RMS baseline behind the
+`Vad` trait. **The latency budget** is one machine and one two-second clip, which is a shape
+rather than a number to publish.
+
+**Unsigned.** SignPath Foundation asks that a project already be released, so the first
+release ships without a certificate and `docs/CODE_SIGNING.md` is what ships in its place —
+with a `SHA256SUMS` file and a GitHub build attestation where a signature would go.
