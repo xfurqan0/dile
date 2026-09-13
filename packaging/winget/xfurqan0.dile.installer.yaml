@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+# The installer manifest.
+#
+# `InstallerSha256` is copied from the `SHA256SUMS` the release itself carries — the hash of
+# the installer the GitHub runner built, not of one built on a laptop. `docs/RELEASE.md` step
+# 6 is where it is pasted in, once per release, after the draft exists, and
+# `scripts/winget-manifest.ps1` is what pastes it.
+#
+# Four choices worth their explanation:
+#
+#   * `Scope: user`. The NSIS package installs per user, into `%LOCALAPPDATA%\Dile`, and asks
+#     for no elevation. A dictation tool that reads one account's microphone and writes one
+#     account's settings has no business writing to Program Files or to HKLM, and a package
+#     that needs a UAC prompt is a package a lot of people never install.
+#   * `MinimumOSVersion: 10.0.17763.0`. Windows 10 1809. The review panel is drawn by
+#     WebView2, which is part of Windows from 1803 onwards; 1809 is the oldest build still
+#     worth naming, and `webviewInstallMode: downloadBootstrapper` covers anything older by
+#     fetching Microsoft's own runtime installer rather than carrying 127 MB of it.
+#   * **The silent switches carry `/R`.** Tauri's NSIS template only launches the application
+#     after a silent or passive install when `/R` is passed; the interactive installer has a
+#     "run Dile" checkbox on its finish page instead. Without `/R`, `winget install` would
+#     leave a dictation tool installed and not running — no tray icon, and the hotkey doing
+#     nothing, which for this product looks exactly like a broken install.
+#   * **No `Dependencies`.** The one thing Dile needs that Windows may not have is the
+#     WebView2 runtime, and the installer fetches Microsoft's bootstrapper itself rather than
+#     asking winget to resolve a package for it. The speech model is not a dependency either:
+#     it is downloaded on first run, behind a consent dialog, and a package manager is the
+#     wrong place to agree to a gigabyte.
+
+PackageIdentifier: xfurqan0.dile
+PackageVersion: 0.1.0
+
+MinimumOSVersion: 10.0.17763.0
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /S /R
+  SilentWithProgress: /P /R
+UpgradeBehavior: install
+
+# The name of the Add/Remove Programs key the installer writes under HKCU, which is how
+# winget recognises an installation it did not make and how `winget upgrade` finds this one.
+ProductCode: Dile
+
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/xfurqan0/dile/releases/download/v0.1.0/Dile_0.1.0_x64-setup.exe
+    # Sixty-four zeros until the release exists: this is the hash of a file that is uploaded
+    # in the step before, so it is filled in from the release's own `SHA256SUMS` — the
+    # installer the GitHub runner built, not one built on a laptop. docs/RELEASE.md step 6,
+    # and `scripts/winget-manifest.ps1` does the editing.
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+ManifestType: installer
+ManifestVersion: 1.6.0

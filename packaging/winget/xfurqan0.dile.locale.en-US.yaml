@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+# The default-locale manifest: everything `winget show xfurqan0.dile` prints.
+
+PackageIdentifier: xfurqan0.dile
+PackageVersion: 0.1.0
+PackageLocale: en-US
+
+Publisher: Furkan Yıldız
+PublisherUrl: https://github.com/xfurqan0
+PublisherSupportUrl: https://github.com/xfurqan0/dile/issues
+
+PackageName: Dile
+PackageUrl: https://github.com/xfurqan0/dile
+Moniker: dile
+
+License: MIT
+LicenseUrl: https://github.com/xfurqan0/dile/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Furkan Yıldız
+CopyrightUrl: https://github.com/xfurqan0/dile/blob/main/LICENSE
+
+ShortDescription: Hold a key, speak, let go. Local Turkish-first dictation for Windows.
+Description: |-
+  Hold Ctrl+Alt+Space, speak, let go. What you said appears in a small panel at the top
+  of the screen, and lands in whatever you were typing in — an editor, a terminal, a
+  browser field — with your own clipboard put back afterwards. Fix a word, copy it
+  instead, or press Esc before it goes anywhere.
+
+  Turkish first. The model is chosen by measured Turkish accuracy on Dile's own test
+  set rather than by a model card, and the personal dictionary works in both directions:
+  fed to the recognizer before it decodes, and used to correct the spelling afterwards.
+  Terms with ç ğ ı ö ş ü survive byte for byte. Turkish casing, deterministic punctuation
+  repair and three cleanup strictness levels are rules rather than a second model.
+  English works too.
+
+  Everything stays on the machine. Audio is processed in memory, never written to disk
+  and never sent anywhere; the only network access is downloading the speech model on
+  first run, behind a consent dialog. No account, no telemetry, no socket.
+
+  The speech engine runs in a process of its own on the GPU through Vulkan, chosen by a
+  probe on first start, so a driver fault costs one dictation rather than the
+  application. A machine whose probe fails gets a CPU tier with a smaller model and is
+  told so. `dile transcribe <file.wav>` is the same engine from a script.
+
+Tags:
+  - ai
+  - asr
+  - dictation
+  - local-first
+  - offline
+  - privacy
+  - speech-recognition
+  - speech-to-text
+  - transcription
+  - turkish
+  - voice
+  - whisper
+
+ReleaseNotesUrl: https://github.com/xfurqan0/dile/releases/tag/v0.1.0
+
+Documentations:
+  - DocumentLabel: README
+    DocumentUrl: https://github.com/xfurqan0/dile#readme
+  - DocumentLabel: Changelog
+    DocumentUrl: https://github.com/xfurqan0/dile/blob/main/CHANGELOG.md
+  - DocumentLabel: What Dile reads, and never reads
+    DocumentUrl: https://github.com/xfurqan0/dile/blob/main/SECURITY.md
+
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

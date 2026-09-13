@@ -1,0 +1,286 @@
+name: Release
+
+# Runs on a tag, produces a **draft** release, and stops.
+#
+# Everything that is one-way is a person's job: pushing the tag, reading the draft, and
+# pressing publish. The workflow's contribution is that the artefact attached to that draft
+# was built by a machine, from a commit, in public, with the tests green — and that its
+# provenance can be checked by anyone who downloads it.
+#
+# `workflow_dispatch` is here for rehearsals: it builds and uploads the same artefact to the
+# run, without creating or touching a release. Use it to prove the pipeline before tagging,
+# and in this repository the first rehearsal is worth more than usual — the Vulkan SDK step
+# below is the one part of the build that has never run anywhere but a maintainer's machine.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Sign the installer with SignPath (not yet available — see docs/CODE_SIGNING.md)"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Pinned rather than "latest". A release built against whatever the SDK mirror served that
+  # morning is a release nobody can reproduce, and this is the version docs/BUILDING.md
+  # measured the cold Vulkan build on.
+  VULKAN_SDK_VERSION: "1.4.357.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The same gate CI runs. A tag does not get a shortcut: if the tests would fail on the
+  # commit, the release does not get built from it.
+  verify:
+    name: Lint and test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check CMake is present
+        run: cmake --version
+
+      # `bundle.externalBin` is checked by `tauri-build`, so both sidecars have to exist
+      # before anything compiles dile-app — clippy and cargo test included. CPU-only here:
+      # this job is about whether the code is correct, and the GPU host is the build job's.
+      - name: Prepare the sidecars
+        shell: pwsh
+        run: ./scripts/build-host.ps1 -Cpu -DebugBuild
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
+  # Licences, advisories, duplicate versions and unexpected sources, from deny.toml. The same
+  # job ci.yml runs, on Linux, because it resolves the dependency graph rather than building
+  # it — and a release is exactly the moment a new advisory must not be discovered later.
+  audit:
+    name: Dependencies — licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check
+        run: cargo deny check
+
+  build:
+    name: Build the installer
+    needs: [verify, audit]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # First, before ten minutes of Vulkan shaders. A tag that says v0.1.1 over a tree that
+      # says 0.1.0 produces a release whose file names do not match its own name, and nobody
+      # notices until somebody downloads it. Three numbers have to agree: the tag, the
+      # workspace version cargo builds from, and the version Tauri writes into the installer's
+      # file name and its Add/Remove Programs entry.
+      - name: Check the tag against the manifests
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $workspace = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          $bundle = (Get-Content crates/dile-app/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "tag $tag, Cargo.toml $workspace, tauri.conf.json $bundle"
+          if ($workspace -ne $bundle) {
+            throw "Cargo.toml says $workspace and tauri.conf.json says $bundle"
+          }
+          if ($tag -ne $workspace) {
+            throw "tag $tag does not match the manifests at $workspace"
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # The whole SDK, not the installer: installing it is a couple of minutes and the cache
+      # restores in seconds. Keyed on the pinned version, so a bump is a cache miss rather
+      # than a stale toolchain nobody notices.
+      - name: Cache the Vulkan SDK
+        id: vulkan
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows
+
+      # LunarG's own installer, which takes the three arguments that make it non-interactive.
+      # There is no winget package for the SDK that pins a version, and an unpinned one would
+      # defeat the point of the variable above.
+      - name: Install the Vulkan SDK
+        if: steps.vulkan.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ env.VULKAN_SDK_VERSION }}"
+          $url = "https://sdk.lunarg.com/sdk/download/$version/windows/vulkansdk-windows-X64-$version.exe"
+          $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          & $installer --root "C:\VulkanSDK\$version" --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) { throw "the Vulkan SDK installer exited with $LASTEXITCODE" }
+
+      # VULKAN_SDK is what scripts/build-host.ps1 reads, and it is the variable the SDK's own
+      # installer sets machine-wide on a developer's machine. LIB is not: that is the trap
+      # docs/BUILDING.md spends a paragraph on, and build-host.ps1 sets it itself.
+      - name: Point at the Vulkan SDK
+        shell: pwsh
+        run: |
+          $sdk = "C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}"
+          if (-not (Test-Path "$sdk\Lib\vulkan-1.lib")) { throw "$sdk is not a usable SDK" }
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Remapped environment, both sidecars with the GPU feature, `cargo tauri build`, then
+      # the check for build-machine paths — in that order, which is why it is one script and
+      # not four steps. It prints the artefacts with their sizes and the installer's SHA-256
+      # at the end, and it **deletes the bundle** if either binary carries the path of the
+      # machine that built it, so a release stops at a step that says why.
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+
+      - name: Collect the artefacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/bundle/nsis/*-setup.exe dist/
+          Get-ChildItem dist |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding utf8 dist/SHA256SUMS
+          Get-Content dist/SHA256SUMS
+
+      # Signed by GitHub, not by us: it records which workflow run, from which commit, built
+      # this exact file. Until SignPath approves a certificate this is the strongest thing a
+      # downloader can check, and docs/CODE_SIGNING.md tells them how.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*-setup.exe
+
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: dile-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # Written, reviewed, and switched off. docs/CODE_SIGNING.md explains the whole plan; the
+  # short version is that SignPath Foundation asks a project to be released and maintained
+  # before it applies, so the first release ships unsigned and this job waits.
+  #
+  # Turning it on is: replace `if: false` with the condition written directly above it, add
+  # the four repository secrets, and change the README's "unsigned" paragraph. Three lines,
+  # reviewed on their own, rather than a new file written on release day.
+  sign:
+    name: Sign with SignPath (not enabled)
+    needs: build
+    # When SignPath approves, `if: false` is replaced by exactly this:
+    #
+    #     if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
+    #
+    # which is what docs/CODE_SIGNING.md promises: signing is a dispatch somebody chose,
+    # never something a tag push sets off. The `sign` input it reads is already declared at
+    # the top of this file, so the condition is the only line that changes.
+    if: false
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dile-windows
+          path: dist
+
+      # Submits the installer to SignPath, waits for a human to approve the signing request
+      # in their interface, and downloads the signed file back in its place. The approval is
+      # deliberately not automatable: it is the step that makes a signature mean somebody
+      # decided, rather than that a token existed.
+      - name: Submit for signing
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dile-windows-signed
+          path: dist-signed/*
+          if-no-files-found: error
+
+  # A draft. Not a release: the notes are read by a person, and publishing is their click.
+  draft:
+    name: Draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dile-windows
+          path: dist
+
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="docs/release-notes-${version}.md"
+          if [ ! -f "$notes" ]; then
+            echo "$notes is missing. docs/RELEASE.md step 5 writes it, before the tag." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "Dile $version" \
+            --notes-file "$notes" \
+            dist/*
