@@ -15,6 +15,12 @@ missing_docs = "warn"
 [dependencies]
 thiserror = "2"
 
+# One line, in one place: the blocking set the hook reads can in principle be poisoned, and
+# a panel whose keys are reported but not swallowed is a worse product rather than a broken
+# one — which is a thing to say out loud, not a thing to return. `dile-capture` already
+# reports this way, and `log` is a facade: a crate that installs no logger writes nowhere.
+log = "0.4.34"
+
 # Only the OS adapter needs this, and only Windows has an adapter today. Gating the
 # dependency on the target keeps the state machine in `state.rs` buildable and testable on
 # every platform — the same rule `dile-core` follows — and keeps `evdev` and the `objc2`

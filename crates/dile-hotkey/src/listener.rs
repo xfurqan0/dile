@@ -47,6 +47,25 @@
 //! nothing else. A chord whose key this build of `handy-keys` cannot name is not blocked and
 //! the hook is installed observe-only, because a trigger that reports is worth more than one
 //! that refuses to start.
+//!
+//! ## The panel's three keys, added and taken away while the hook runs
+//!
+//! WP5b puts a window on screen that never takes focus, so Enter, Esc and `Ctrl+C` have to be
+//! read from the hook — and **blocked**, because an Enter that also reaches the editor behind
+//! the panel would put a newline in the document the user is dictating into, which is the
+//! same bug as the swallowed space of WP2.
+//!
+//! [`HotkeyListener::panel_keys`] is how the application arms them, and nothing is reinstalled
+//! to do it: `handy-keys` takes the blocking set as an `Arc<Mutex<HashSet<Hotkey>>>` and reads
+//! it inside the hook on every event, so adding three entries takes effect on the next key
+//! press. The listener keeps its handle on that set for exactly this.
+//!
+//! **The three entries are spelled so that only the bare key is taken.** A hotkey with no
+//! modifiers matches only an event with no modifiers, so `Shift+Enter` is not blocked and
+//! still reaches the panel as a newline; `Ctrl+C` is the compound Ctrl, so either side of the
+//! keyboard counts and `Ctrl+Shift+C` does not. The same three definitions decide what is
+//! blocked and what is reported, so the hook and the machine cannot disagree about which key
+//! belongs to the panel.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +82,7 @@ use handy_keys::{
 use crate::config::HotkeyConfig;
 use crate::error::Error;
 use crate::keys::{Key, MainKey, ModifierFamily, ModifierKey};
-use crate::state::{Action, Actions, Event, HotkeyMachine};
+use crate::state::{Action, Actions, Event, HotkeyMachine, PanelKey};
 
 /// How long the thread waits for a key event before feeding the machine a tick.
 ///
@@ -88,6 +107,10 @@ pub struct Emitted {
 enum Command {
     /// Focus was lost; forget every key believed to be held.
     Reset,
+    /// The review panel appeared or went away; Enter, Esc and `Ctrl+C` change hands.
+    PanelKeys(bool),
+    /// The panel's re-record button was pressed.
+    Rerecord,
 }
 
 /// A live global hotkey listener.
@@ -109,6 +132,12 @@ pub struct HotkeyListener {
     actions: Receiver<Emitted>,
     commands: Sender<Command>,
     running: Arc<AtomicBool>,
+    /// The set the hook reads on every key event, or `None` when the hook is observe-only.
+    ///
+    /// Held so that [`HotkeyListener::panel_keys`] can add and remove the panel's three
+    /// entries without taking the hook down and putting another one up — a reinstall would
+    /// drop every key held at that moment, which during a dictation is the dictation.
+    blocking: Option<BlockingHotkeys>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -130,6 +159,9 @@ impl HotkeyListener {
         // Built here rather than on the listener thread so that an unnameable chord is a
         // decision taken once, in the open, instead of a branch inside the hook's setup.
         let blocking = blocking_set(&config);
+        // The handle keeps a second reference: the hook owns the set, and the application
+        // adds the panel's keys to it while that hook is running.
+        let shared = blocking.clone();
 
         let thread_running = Arc::clone(&running);
         let thread = thread::Builder::new()
@@ -158,6 +190,7 @@ impl HotkeyListener {
                 actions: action_rx,
                 commands: command_tx,
                 running,
+                blocking: shared,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -189,6 +222,59 @@ impl HotkeyListener {
     pub fn reset(&self) -> Result<(), Error> {
         self.commands
             .send(Command::Reset)
+            .map_err(|_| Error::NotRunning)
+    }
+
+    /// Hand Enter, Esc and `Ctrl+C` to the review panel, or give them back to the machine.
+    ///
+    /// Two things happen, and both have to: the three keys are added to the hook's blocking
+    /// set so they never reach the window behind the panel, and the state machine is told to
+    /// turn them into [`Action::PanelTransfer`], [`Action::PanelCancel`] and
+    /// [`Action::PanelCopy`]. Call it with `false` the moment the panel hides — while it is
+    /// `true`, Esc does nothing anywhere else on the machine.
+    ///
+    /// A listener whose hook is observe-only still reports the keys; it simply cannot stop
+    /// them, which is the same trade `blocking_set` makes for an unnameable chord.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotRunning`] if the listener thread has already ended.
+    pub fn panel_keys(&self, enabled: bool) -> Result<(), Error> {
+        if let Some(blocking) = self.blocking.as_ref() {
+            match blocking.lock() {
+                Ok(mut hotkeys) => {
+                    for hotkey in panel_hotkeys() {
+                        if enabled {
+                            hotkeys.insert(hotkey);
+                        } else {
+                            hotkeys.remove(&hotkey);
+                        }
+                    }
+                }
+                // The hook is still reading whatever the set held before. Reporting is
+                // unaffected, so the panel works and the keys also reach the window behind
+                // it — a worse product than intended, not a broken one.
+                Err(_) => {
+                    log::warn!("the blocking set is poisoned; the panel keys are not blocked")
+                }
+            }
+        }
+        self.commands
+            .send(Command::PanelKeys(enabled))
+            .map_err(|_| Error::NotRunning)
+    }
+
+    /// Start a recording again from the panel, with no key pressed.
+    ///
+    /// Only does anything in [`crate::Mode::Toggle`]; see [`HotkeyMachine::rerecord`]. Any
+    /// resulting action comes back through [`HotkeyListener::actions`] like every other.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotRunning`] if the listener thread has already ended.
+    pub fn rerecord(&self) -> Result<(), Error> {
+        self.commands
+            .send(Command::Rerecord)
             .map_err(|_| Error::NotRunning)
     }
 }
@@ -232,6 +318,39 @@ fn primary_hotkey(config: &HotkeyConfig) -> Option<OsHotkey> {
     OsHotkey::new(modifiers, key).ok()
 }
 
+/// The three keys the review panel claims, with the modifier state each one requires.
+///
+/// One table, read twice — to decide what the hook swallows and to decide what this module
+/// reports — so that a key can never be blocked without also being reported, which would be
+/// a key that disappears from the machine and arrives nowhere.
+///
+/// `Modifiers::empty()` is not "any modifier": `handy_keys::Modifiers::matches` requires the
+/// event to hold nothing from a group the hotkey does not name, so a bare Enter is taken and
+/// `Shift+Enter` is left alone for the panel to turn into a newline. `CTRL` is the compound
+/// flag, so either Ctrl counts and `Ctrl+Shift+C` does not.
+const PANEL_KEYS: [(Modifiers, OsKey, PanelKey); 3] = [
+    (Modifiers::empty(), OsKey::Return, PanelKey::Transfer),
+    (Modifiers::empty(), OsKey::Escape, PanelKey::Cancel),
+    (Modifiers::CTRL, OsKey::C, PanelKey::Copy),
+];
+
+/// [`PANEL_KEYS`] in the form the hook's blocking set holds.
+fn panel_hotkeys() -> Vec<OsHotkey> {
+    PANEL_KEYS
+        .iter()
+        .filter_map(|&(modifiers, key, _)| OsHotkey::new(modifiers, key).ok())
+        .collect()
+}
+
+/// Which of the panel's keys this event is, if it is one of them.
+fn panel_key_of(event: &OsKeyEvent) -> Option<PanelKey> {
+    let pressed = event.key?;
+    PANEL_KEYS
+        .iter()
+        .find(|&&(modifiers, key, _)| key == pressed && modifiers.matches(event.modifiers))
+        .map(|&(_, _, panel)| panel)
+}
+
 /// A modifier family as the side-agnostic flag pair `handy-keys` matches with.
 ///
 /// The compound flags rather than one side: `docs/PROJECT.md` §3 writes the chord in
@@ -268,6 +387,11 @@ fn run(
                 Ok(Command::Reset) => {
                     let now = Instant::now();
                     forward(actions, machine.reset(now), now);
+                }
+                Ok(Command::PanelKeys(enabled)) => machine.set_panel_keys(enabled),
+                Ok(Command::Rerecord) => {
+                    let now = Instant::now();
+                    forward(actions, machine.rerecord(now), now);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
@@ -328,6 +452,16 @@ fn translate(event: &OsKeyEvent, chord_key: Option<OsKey>, now: Instant) -> Opti
         } else {
             Event::Up(named, now)
         });
+    }
+
+    // The panel's keys, after the chord and before everything else: a user who binds their
+    // chord to one of them has asked for a trigger, and a trigger outranks a window button.
+    // Whether the panel is up is not decided here — `HotkeyMachine` owns that, so the rule
+    // is unit-testable and the hook stays a translator.
+    if event.is_key_down
+        && let Some(panel) = panel_key_of(event)
+    {
+        return Some(Event::Panel(panel, now));
     }
 
     // Everything else on the keyboard, and every mouse button. Only the press matters: it is
@@ -399,10 +533,13 @@ mod tests {
     use handy_keys::{Key as OsKey, KeyEvent as OsKeyEvent, Modifiers};
     use std::time::Instant;
 
-    use super::{blocking_set, from_os_key, map_modifier, primary_hotkey, to_os_key, translate};
+    use super::{
+        blocking_set, from_os_key, map_modifier, panel_hotkeys, panel_key_of, primary_hotkey,
+        to_os_key, translate,
+    };
     use crate::config::HotkeyConfig;
     use crate::keys::{Key, MainKey, ModifierKey, ModifierOnly};
-    use crate::state::Event;
+    use crate::state::{Event, PanelKey};
 
     fn modifier_event(changed: Modifiers, is_key_down: bool) -> OsKeyEvent {
         OsKeyEvent {
@@ -548,6 +685,85 @@ mod tests {
         // Ctrl+Space is the chord §3 excludes permanently, and it must not be swallowed
         // either — the IME owns it.
         assert!(!hotkey.modifiers.matches(Modifiers::CTRL_LEFT));
+    }
+
+    #[test]
+    fn the_panel_takes_the_bare_key_and_leaves_the_chorded_one() {
+        let now = Instant::now();
+        let chord_key = to_os_key(MainKey::Space);
+
+        let bare = |key| OsKeyEvent {
+            modifiers: Modifiers::empty(),
+            key: Some(key),
+            is_key_down: true,
+            changed_modifier: None,
+        };
+        assert_eq!(panel_key_of(&bare(OsKey::Return)), Some(PanelKey::Transfer));
+        assert_eq!(panel_key_of(&bare(OsKey::Escape)), Some(PanelKey::Cancel));
+        assert_eq!(panel_key_of(&bare(OsKey::C)), None, "C alone is just C");
+
+        let with = |modifiers, key| OsKeyEvent {
+            modifiers,
+            key: Some(key),
+            is_key_down: true,
+            changed_modifier: None,
+        };
+        assert_eq!(
+            panel_key_of(&with(Modifiers::CTRL_LEFT, OsKey::C)),
+            Some(PanelKey::Copy)
+        );
+        assert_eq!(
+            panel_key_of(&with(Modifiers::CTRL_RIGHT, OsKey::C)),
+            Some(PanelKey::Copy),
+            "either Ctrl copies, the way the chord matches either side"
+        );
+        assert_eq!(
+            panel_key_of(&with(
+                Modifiers::CTRL_LEFT | Modifiers::SHIFT_LEFT,
+                OsKey::C
+            )),
+            None,
+            "Ctrl+Shift+C belongs to whatever the user is working in"
+        );
+        assert_eq!(
+            panel_key_of(&with(Modifiers::SHIFT_LEFT, OsKey::Return)),
+            None,
+            "Shift+Enter has to reach the panel as a newline"
+        );
+
+        // And the translation agrees with the table in both directions.
+        assert_eq!(
+            translate(&bare(OsKey::Escape), chord_key, now),
+            Some(Event::Panel(PanelKey::Cancel, now))
+        );
+        assert_eq!(
+            translate(&key_event(OsKey::Escape, false), chord_key, now),
+            None,
+            "only the press matters; a release is nothing"
+        );
+    }
+
+    #[test]
+    fn what_the_hook_swallows_for_the_panel_is_what_the_panel_is_told_about() {
+        let hotkeys = panel_hotkeys();
+        assert_eq!(
+            hotkeys.len(),
+            3,
+            "one entry per key, or one of them escapes"
+        );
+
+        for hotkey in hotkeys {
+            let event = OsKeyEvent {
+                modifiers: hotkey.modifiers,
+                key: hotkey.key,
+                is_key_down: true,
+                changed_modifier: None,
+            };
+            assert!(
+                panel_key_of(&event).is_some(),
+                "{hotkey:?} would be blocked and never reported"
+            );
+        }
     }
 
     #[test]

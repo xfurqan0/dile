@@ -40,6 +40,35 @@ use std::time::{Duration, Instant};
 use crate::config::{HotkeyConfig, Mode};
 use crate::keys::{Key, ModifierFamily, ModifierKey};
 
+/// One of the three keys the review panel claims while it is on screen.
+///
+/// They are neither a trigger nor a chord: they belong to a window that is already showing,
+/// and they mean nothing when it is not. `docs/PROJECT.md` §3 names all three — Enter
+/// transfers, Esc cancels, `Ctrl+C` copies — and the reason they are read here rather than
+/// in the webview is that the panel never takes focus, so a press is on its way to somebody
+/// else's window by the time this crate sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKey {
+    /// Enter, with no modifier held.
+    Transfer,
+    /// Esc.
+    Cancel,
+    /// `Ctrl+C`.
+    Copy,
+}
+
+impl PanelKey {
+    /// What the application does when this key arrives while the panel is up.
+    #[must_use]
+    pub const fn action(self) -> Action {
+        match self {
+            PanelKey::Transfer => Action::PanelTransfer,
+            PanelKey::Cancel => Action::PanelCancel,
+            PanelKey::Copy => Action::PanelCopy,
+        }
+    }
+}
+
 /// Something that happened to a key.
 ///
 /// The OS adapter is responsible for the split: keys that belong to a configured trigger
@@ -51,6 +80,12 @@ pub enum Event {
     Down(Key, Instant),
     /// A key belonging to a configured trigger went up.
     Up(Key, Instant),
+    /// One of the review panel's three keys went down.
+    ///
+    /// The adapter sends these whenever they are pressed; whether they mean anything is
+    /// [`HotkeyMachine::set_panel_keys`]'s answer, so that rule lives in this module with
+    /// every other rule rather than in the hook.
+    Panel(PanelKey, Instant),
     /// Any other key, or a mouse button, went down.
     OtherKeyDown(Instant),
     /// Time passed with nothing pressed.
@@ -75,6 +110,12 @@ pub enum Action {
     StopRecording,
     /// Stop capturing and throw the audio away. Nothing reaches transcription.
     DiscardRecording,
+    /// The panel's Enter: transfer what is in it into the window it was aimed at.
+    PanelTransfer,
+    /// The panel's Esc: close it and paste nothing.
+    PanelCancel,
+    /// The panel's `Ctrl+C`: put the text on the clipboard and do not paste it.
+    PanelCopy,
 }
 
 /// The actions one event produced — never more than two.
@@ -225,6 +266,8 @@ pub struct HotkeyMachine {
     /// When the live recording began — which is not the same as when the current press
     /// began, because a toggle latch outlives the press that started it.
     recording_since: Option<Instant>,
+    /// Whether the review panel is on screen and therefore owns Enter, Esc and `Ctrl+C`.
+    panel_keys: bool,
 }
 
 impl HotkeyMachine {
@@ -239,6 +282,7 @@ impl HotkeyMachine {
             suppress_primary: false,
             suppress_second: false,
             recording_since: None,
+            panel_keys: false,
         }
     }
 
@@ -254,14 +298,48 @@ impl HotkeyMachine {
         self.recording_since.is_some()
     }
 
+    /// Whether Enter, Esc and `Ctrl+C` currently belong to the review panel.
+    #[must_use]
+    pub const fn panel_keys(&self) -> bool {
+        self.panel_keys
+    }
+
+    /// Hand the panel's three keys to the panel, or give them back to the machine.
+    ///
+    /// Switched on while the panel is on screen and off the moment it hides. It is a mode
+    /// rather than a state of its own because the panel is not a phase of a dictation: it is
+    /// up during a recording, during transcription and after both, and the keys mean the same
+    /// thing in all three.
+    pub const fn set_panel_keys(&mut self, enabled: bool) {
+        self.panel_keys = enabled;
+    }
+
     /// Feed one event and get back what the application must do.
     pub fn on_event(&mut self, event: Event) -> Actions {
         match event {
             Event::Down(key, now) => self.on_down(key, now),
             Event::Up(key, now) => self.on_up(key, now),
+            Event::Panel(key, _) => self.on_panel_key(key),
             Event::OtherKeyDown(_) => self.withdraw_second_key(),
             Event::Tick(now) => self.on_tick(now),
         }
+    }
+
+    /// Start a recording the way a toggle tap would, with no key pressed.
+    ///
+    /// The panel's **re-record** button. In [`Mode::Toggle`] the recording has to begin at
+    /// once — there is no key to hold — and it has to begin *latched*, so that the next tap
+    /// of the chord stops it exactly as if the user had started it themselves. In
+    /// [`Mode::Hold`] there is nothing to do: a hold-to-talk recording lives as long as a
+    /// press, and one nobody is pressing would have no end. The application hides the panel
+    /// either way and the next press starts fresh.
+    pub fn rerecord(&mut self, now: Instant) -> Actions {
+        if self.config.mode != Mode::Toggle || self.active.is_some() {
+            return Actions::none();
+        }
+        self.active = Some(Active::Latched);
+        self.recording_since = Some(now);
+        Actions::one(Action::StartRecording)
     }
 
     /// Forget every key the machine believes is held, because it can no longer be sure.
@@ -459,6 +537,23 @@ impl HotkeyMachine {
         }
     }
 
+    /// One of the panel's keys went down.
+    ///
+    /// It is still a key on the keyboard, so it withdraws a second-key press exactly as any
+    /// other would: Esc pressed during a right-Ctrl hold is a person cancelling, not a
+    /// person dictating. The panel action comes after the withdrawal, which is the pair the
+    /// two-action bound of [`Actions`] allows for.
+    ///
+    /// With the panel down the key is nothing but another key, which is what makes the mode
+    /// safe: the machine cannot emit a panel action while there is no panel to act on.
+    fn on_panel_key(&mut self, key: PanelKey) -> Actions {
+        let mut out = self.withdraw_second_key();
+        if self.panel_keys {
+            out.extend(Actions::one(key.action()));
+        }
+        out
+    }
+
     /// The second key's press was a modifier chord after all.
     fn withdraw_second_key(&mut self) -> Actions {
         if let Some(Active::Held {
@@ -532,7 +627,7 @@ impl HotkeyMachine {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{Action, Event, HotkeyMachine};
+    use super::{Action, Event, HotkeyMachine, PanelKey};
     use crate::config::{HotkeyConfig, Mode};
     use crate::keys::{Chord, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
 
@@ -601,6 +696,19 @@ mod tests {
                 .on_event(Event::OtherKeyDown(now))
                 .as_slice()
                 .to_vec()
+        }
+
+        fn panel_key(&mut self, key: PanelKey, ms: u64) -> Vec<Action> {
+            let now = self.at(ms);
+            self.machine
+                .on_event(Event::Panel(key, now))
+                .as_slice()
+                .to_vec()
+        }
+
+        fn rerecord(&mut self, ms: u64) -> Vec<Action> {
+            let now = self.at(ms);
+            self.machine.rerecord(now).as_slice().to_vec()
         }
 
         fn tick(&mut self, ms: u64) -> Vec<Action> {
@@ -980,6 +1088,93 @@ mod tests {
             vec![Action::DiscardRecording],
             "the adapter should have sent OtherKeyDown; the machine is not fooled either way"
         );
+    }
+
+    // ---- the panel's three keys -------------------------------------------------------
+
+    #[test]
+    fn the_panel_keys_mean_nothing_until_the_panel_is_up() {
+        let mut h = Harness::hold_mode();
+        assert!(!h.machine.panel_keys());
+
+        for key in [PanelKey::Transfer, PanelKey::Cancel, PanelKey::Copy] {
+            assert!(
+                h.panel_key(key, 0).is_empty(),
+                "{key:?} reached the machine with no panel to act on"
+            );
+        }
+
+        h.machine.set_panel_keys(true);
+        assert_eq!(
+            h.panel_key(PanelKey::Transfer, 10),
+            vec![Action::PanelTransfer]
+        );
+        assert_eq!(h.panel_key(PanelKey::Cancel, 20), vec![Action::PanelCancel]);
+        assert_eq!(h.panel_key(PanelKey::Copy, 30), vec![Action::PanelCopy]);
+
+        h.machine.set_panel_keys(false);
+        assert!(h.panel_key(PanelKey::Cancel, 40).is_empty());
+    }
+
+    #[test]
+    fn a_panel_key_withdraws_a_second_key_press_the_way_any_other_key_does() {
+        let mut h = Harness::with_second_key();
+        h.machine.set_panel_keys(true);
+
+        assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
+        assert_eq!(
+            h.panel_key(PanelKey::Copy, 60),
+            vec![Action::DiscardRecording, Action::PanelCopy],
+            "the C of Ctrl+C is still a key going down during a lone-modifier hold"
+        );
+        assert!(!h.machine.is_recording());
+    }
+
+    #[test]
+    fn a_panel_key_leaves_a_chord_recording_alone() {
+        let mut h = Harness::hold_mode();
+        h.machine.set_panel_keys(true);
+
+        assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
+        assert_eq!(
+            h.panel_key(PanelKey::Cancel, 400),
+            vec![Action::PanelCancel],
+            "Esc during a recording is the panel's cancel, not a withdrawal"
+        );
+        assert!(
+            h.machine.is_recording(),
+            "the session owns what cancel means"
+        );
+        assert_eq!(h.release_chord(2_000), vec![Action::StopRecording]);
+    }
+
+    // ---- re-record ---------------------------------------------------------------------
+
+    #[test]
+    fn re_record_starts_a_latched_recording_in_toggle_mode_and_the_next_tap_stops_it() {
+        let mut h = Harness::toggle_mode();
+        assert_eq!(h.rerecord(0), vec![Action::StartRecording]);
+        assert!(h.machine.is_recording());
+
+        // Exactly as if the user had tapped: the next tap of the chord ends it.
+        assert_eq!(h.press_chord(3_000), vec![Action::StopRecording]);
+        assert!(h.release_chord(3_060).is_empty());
+        assert!(!h.machine.is_recording());
+    }
+
+    #[test]
+    fn re_record_does_nothing_in_hold_mode_or_while_something_is_already_recording() {
+        let mut h = Harness::hold_mode();
+        assert!(
+            h.rerecord(0).is_empty(),
+            "a hold-to-talk recording nobody is pressing would have no end"
+        );
+        assert!(!h.machine.is_recording());
+
+        let mut toggling = Harness::toggle_mode();
+        assert_eq!(toggling.press_chord(0), vec![Action::StartRecording]);
+        assert!(toggling.release_chord(60).is_empty());
+        assert!(toggling.rerecord(500).is_empty(), "nothing starts twice");
     }
 
     #[test]

@@ -23,13 +23,21 @@
 //! It is also why a macOS or Linux port is a module rather than a rewrite: the rules are
 //! already portable, and they are already tested on every platform this workspace builds on.
 //!
-//! ## The four verbs
+//! ## The four verbs, and the three WP5b added
 //!
 //! [`Action::StartRecording`], [`Action::StopRecording`], [`Action::DiscardRecording`],
 //! [`Action::OpenPanelIdle`]. Recording starts at the **press**, before anyone knows whether
 //! the press will turn out to be a real one, so that the first syllable is already in the
 //! buffer — which makes `DiscardRecording` a normal outcome rather than an error path. The
 //! reasoning behind each rule is in the [`state`] module documentation.
+//!
+//! [`Action::PanelTransfer`], [`Action::PanelCancel`] and [`Action::PanelCopy`] are the
+//! review panel's Enter, Esc and `Ctrl+C`. They are not a trigger and they are off by
+//! default: the application arms them with [`HotkeyListener::panel_keys`] while the panel is
+//! on screen, which both blocks the three keys and turns them into these verbs. The panel
+//! never takes focus, so reading them from the hook is the only place they can be read at
+//! all — and blocking them is why the Enter that transfers does not also land in the
+//! document behind the panel.
 //!
 //! ## What the application still owes the machine
 //!
@@ -49,7 +57,7 @@ pub use config::{
 };
 pub use error::Error;
 pub use keys::{Chord, ChordParseError, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
-pub use state::{Action, Actions, Event, HotkeyMachine};
+pub use state::{Action, Actions, Event, HotkeyMachine, PanelKey};
 
 #[cfg(target_os = "windows")]
 pub mod capture;
