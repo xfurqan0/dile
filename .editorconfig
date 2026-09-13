@@ -1,0 +1,29 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# rustfmt owns Rust formatting and uses four spaces; this makes an editor agree with it
+# before `cargo fmt` ever runs, rather than fighting it on every keystroke.
+[*.rs]
+indent_size = 4
+
+# Same four spaces, for the same reason: these files sit next to Rust and are written with
+# the same hand.
+[*.{toml,ps1}]
+indent_size = 4
+
+# Two trailing spaces are a line break in Markdown, so trimming them silently rewrites text.
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{json,jsonl}]
+insert_final_newline = true
+
+[*.{yml,yaml}]
+indent_size = 2

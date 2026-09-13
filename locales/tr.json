@@ -1,0 +1,21 @@
+{
+  "app.name": "Dile",
+  "tray.tooltip.idle": "Dile — yazdırmak için {hotkey} tuşunu basılı tut",
+  "tray.tooltip.recording": "Dile — kaydediyor, bitince bırak",
+  "tray.tooltip.working": "Dile — yazıya döküyor",
+  "tray.tooltip.nothing": "Dile — ses duyulmadı",
+  "tray.tooltip.nomicrophone": "Dile — mikrofon yok",
+  "tray.menu.settings": "Ayarlar",
+  "tray.menu.quit": "Çık",
+  "settings.title": "Dile ayarları",
+  "panel.state.recording": "Kaydediliyor",
+  "panel.state.processing": "Yazıya dökülüyor",
+  "panel.state.result": "Hazır",
+  "panel.recording.elapsed": "{elapsed} / {cap}",
+  "panel.processing.elapsed": "{elapsed} sn oldu",
+  "panel.target": "→ {app}",
+  "panel.action.transfer": "Aktar",
+  "panel.action.copy": "Kopyala",
+  "panel.action.cancel": "İptal",
+  "panel.action.rerecord": "Yeniden kaydet"
+}

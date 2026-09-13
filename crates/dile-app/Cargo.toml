@@ -1,0 +1,45 @@
+[package]
+name = "dile-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Dile tray application: hold a key, speak, let go."
+
+[lints.rust]
+missing_docs = "warn"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The version is carried next to the path on purpose: a bare `path` is a wildcard
+# requirement, and `deny.toml` refuses those. It tracks `workspace.package.version`.
+dile-core = { path = "../dile-core", version = "0.1.0" }
+dile-capture = { path = "../dile-capture", version = "0.1.0" }
+dile-hotkey = { path = "../dile-hotkey", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+# `dile-capture` reports through `log`, so without an implementation none of it is visible.
+# Default features are off: the colour and timestamp stacks are four more crates for a line
+# that only ever reaches a debug console, since a release build is windowed and has nowhere
+# to print.
+env_logger = { version = "0.11.6", default-features = false }
+log = "0.4.34"
+
+# Debug builds only, and `#[cfg(debug_assertions)]` in `session.rs` is where that is
+# enforced: the hand test needs to hear what was captured, and a release build writes no
+# audio to disk at all. `dile-capture`'s example already uses this crate.
+hound = "3.5.1"
+
+# `tray-icon` is what turns the tray on in Tauri v2 and `image-png` lets the tray take a
+# PNG. Both are Tauri's own features, not extra crates.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+
+# `dile-engine` is deliberately NOT a dependency. WP3 puts the engine in a process of its
+# own so that a Vulkan driver crash takes the engine down and not the tray (docs/PROJECT.md
+# §3, GPU policy); linking it into the tray now would be the architecture WP3 has to undo.

@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Tauri generates these from tauri.conf.json and the capability files at build time.
+crates/dile-app/gen/
+src-tauri/gen/
+
+# Node and any built frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Never commit an updater private key. Losing it means never shipping an update to the
+# installed base again; leaking it means someone else can.
+*.key
+*.pem
+minisign*.key
+
+# Local machine state
+*.log
+.env
+.env.*
+# Agent and editor working state: the whole directory, not just the local settings file,
+# so a wide `git add` can never sweep a machine-specific config into a commit.
+.claude/
+.DS_Store
+Thumbs.db
+
+# Models and audio never live in this repository (docs/PROJECT.md §3 Distribution, §4).
+# Weights and benchmark material live outside the repository; the app downloads weights from
+# Hugging Face at run time.
+models/
+*.bin
+*.gguf
+*.onnx
+*.wav
+*.mp4

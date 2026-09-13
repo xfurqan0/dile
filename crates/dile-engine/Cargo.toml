@@ -1,0 +1,32 @@
+[package]
+name = "dile-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Speech-to-text for Dile: a thin, opinionated wrapper over transcribe-cpp."
+
+[lints.rust]
+missing_docs = "warn"
+
+[dependencies]
+# `default-features = false` is mandatory, not a preference: the crate's default feature is
+# `metal`, which does not exist on Windows. Verified in M0 Step 0, 2026-09-09.
+transcribe-cpp = { version = "0.2.3", default-features = false }
+
+[dev-dependencies]
+# Only the smoke test reads a file from disk; the library takes PCM it is handed.
+hound = "3"
+
+[features]
+default = []
+# The GPU sits behind a cargo feature so a CPU-only checkout needs no graphics SDK. The
+# product's runtime default is the other way round (docs/PROJECT.md §3: Vulkan behind a
+# first-run probe, CPU as the fallback tier), and a release build turns this on. Vulkan rather
+# than CUDA: 53 MB against 627 MB, and the official CUDA builds predate Blackwell's sm_120.
+# Building with this feature needs the Vulkan SDK and one environment variable — see
+# docs/BUILDING.md.
+gpu-vulkan = ["transcribe-cpp/vulkan"]

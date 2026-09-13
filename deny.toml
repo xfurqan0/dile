@@ -1,0 +1,85 @@
+# cargo-deny policy: licences, advisories, duplicate versions and unexpected sources.
+#
+#   cargo install cargo-deny --locked
+#   cargo deny check
+#
+# CI runs it. A maintainer running it locally gets the same answer, because the policy is
+# here rather than in the workflow.
+
+[graph]
+# Windows ships first. `dile-core` is language logic with no platform in it and is meant to
+# build everywhere; checking every target now means the licence question is already answered
+# when the macOS and Linux builds arrive.
+all-features = false
+
+[licenses]
+version = 2
+# Permissive plus MPL-2.0 (file-level weak copyleft; nothing in Dile modifies an MPL file).
+# Strong copyleft in an MIT product is a rewrite, not a paperwork problem — and it is the
+# reason `docs/PROJECT.md` §1 forbids taking anything from dikte (GPL-3.0).
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    # `target-lexicon` (via cfg-expr → system-deps). The LLVM exception only relaxes
+    # Apache-2.0's attribution clause for binaries — it removes an obligation rather than
+    # adding one, so the licence stays permissive. It belongs in `allow` rather than in
+    # `exceptions`: it is a policy decision about the licence, not a pardon for one crate.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    # Weak copyleft, and the only non-permissive entry in this list. MPL-2.0 binds the
+    # individual files it covers, not the program that links them. Five crates arrive under
+    # it through the Tauri tree — `cssparser`, `cssparser-macros`, `dtoa-short`,
+    # `option-ext` and `selectors` — all of them unmodified, so the obligation is source
+    # availability for files Dile does not touch. Modifying an MPL file would change that
+    # answer, and nothing here does.
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = []
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A crate that opens a microphone, a socket or a credential file without this product asking
+# it to belongs in this list with the reason written beside it.
+deny = []
+
+[advisories]
+version = 2
+yanked = "deny"
+# Every entry here carries its reason on the line above it. An advisory with a safe upgrade
+# is upgraded, not ignored: `time` 0.3.47 (RUSTSEC-2026-0009) and `plist` 1.10.1, which pulls
+# `quick-xml` 0.42 (RUSTSEC-2026-0194/0195), were taken that way and are deliberately absent
+# from this list. What is left is unmaintained-crate warnings with no fixed version to move
+# to, all of them dragged in by the Tauri tree.
+ignore = [
+    # Unmaintained, no safe upgrade. `proc-macro-error` reaches the build through Tauri's
+    # macro crates; it runs at compile time only and ships nothing into the binary.
+    "RUSTSEC-2024-0370",
+
+    # The `unic-*` family: unmaintained upstream (open-i18n/rust-unic), no safe upgrade
+    # published. All five are pulled in by `tauri-utils` 2.x through `urlpattern`, which
+    # Tauri uses to match its own capability globs. Nothing in Dile calls them: this
+    # product parses no URL patterns of its own. Revisit when Tauri drops `urlpattern`.
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+    "RUSTSEC-2025-0098", # unic-ucd-version
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

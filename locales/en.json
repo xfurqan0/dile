@@ -1,0 +1,21 @@
+{
+  "app.name": "Dile",
+  "tray.tooltip.idle": "Dile — hold {hotkey} to dictate",
+  "tray.tooltip.recording": "Dile — recording, let go when you are done",
+  "tray.tooltip.working": "Dile — working on it",
+  "tray.tooltip.nothing": "Dile — nothing heard",
+  "tray.tooltip.nomicrophone": "Dile — no microphone",
+  "tray.menu.settings": "Settings",
+  "tray.menu.quit": "Quit",
+  "settings.title": "Dile settings",
+  "panel.state.recording": "Recording",
+  "panel.state.processing": "Working on it",
+  "panel.state.result": "Ready",
+  "panel.recording.elapsed": "{elapsed} of {cap}",
+  "panel.processing.elapsed": "{elapsed} s so far",
+  "panel.target": "→ {app}",
+  "panel.action.transfer": "Transfer",
+  "panel.action.copy": "Copy",
+  "panel.action.cancel": "Cancel",
+  "panel.action.rerecord": "Re-record"
+}

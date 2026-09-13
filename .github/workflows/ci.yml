@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The gate. Everything that decides whether a change is correct runs here, and none of it
+  # needs the bundler: the Tauri bundler is the fragile part of a Windows pipeline (WebView2,
+  # NSIS, signing) and a bundler problem must never make a correct change look broken. The
+  # installer becomes a gate in WP7, when it is the product rather than a by-product.
+  windows:
+    name: Windows — lint, test, build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # The expensive artefact in this workspace is transcribe.cpp: `transcribe-cpp-sys`
+      # builds a C++ library from source through CMake, which is about two minutes cold and
+      # nothing warm. Caching it is the difference between a 12-minute run and a 4-minute one.
+      - uses: Swatinem/rust-cache@v2
+
+      # CMake is already on the windows-latest image, and the build needs nothing else. This
+      # step exists to fail loudly with the version if a future image drops it, rather than
+      # leaving a maintainer to read a CMake error from inside a build script.
+      - name: Check CMake is present
+        run: cmake --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # CPU features only. The `gpu-vulkan` feature is deliberately NOT built here: it needs
+      # the Vulkan SDK, which is a ~250 MB download and an installer on every run, for a
+      # feature that is opt-in at run time and that no test can exercise on a runner with no
+      # GPU. The maintainer builds it locally before every release — docs/BUILDING.md has the
+      # recipe, including the `LIB` variable the SDK installer does not set — and WP7 revisits
+      # this when the release workflow has to produce a GPU build.
+      - name: Test the workspace
+        run: cargo test --workspace
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # Proves the tray application links and its Tauri context expands: `generate_context!`
+      # reads tauri.conf.json, the capability files and ui/ at compile time, so a broken
+      # config fails here rather than at bundle time. `--no-bundle` keeps NSIS and MSI out of
+      # the loop until WP7.
+      - name: Build the tray application
+        run: cargo tauri build --debug --no-bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dile-debug-windows
+          path: target/debug/dile-app.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # Licences, advisories, duplicate versions and unexpected sources, from deny.toml. On Linux
+  # because it resolves the dependency graph rather than building it, and because it must not
+  # add minutes to the job that decides whether the code is correct.
+  #
+  # An advisory published against a crate deep in the Tauri tree can turn this red on a day
+  # nothing changed here. That is the point of it — but the fix is an entry in
+  # `[advisories] ignore` with the reason written beside it, never deleting the job.
+  audit:
+    name: Dependencies — licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check
+        run: cargo deny check

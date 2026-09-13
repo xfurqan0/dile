@@ -1,0 +1,28 @@
+[workspace]
+members = ["crates/dile-core", "crates/dile-engine", "crates/dile-hotkey", "crates/dile-capture", "crates/dile-app"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# 1.85 is what edition 2024 needs; 1.88 is what the dependency tree needs. `time` 0.3.47 and
+# `plist` 1.10.1 are the versions that carry the fixes for RUSTSEC-2026-0009 and
+# RUSTSEC-2026-0194/0195, and both declare 1.88. Taking a security fix and then declaring an
+# MSRV the fixed tree cannot build under would be a lie in the manifest.
+rust-version = "1.88"
+license = "MIT"
+authors = ["Furkan Yıldız"]
+repository = "https://github.com/xfurqan0/dile"
+homepage = "https://github.com/xfurqan0/dile"
+description = "Hold a key, speak, let go. Local, Turkish-first push-to-talk dictation."
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

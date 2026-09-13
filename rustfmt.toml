@@ -1,0 +1,4 @@
+# Defaults plus the two knobs that keep diffs small and imports readable.
+edition = "2024"
+max_width = 100
+newline_style = "Unix"

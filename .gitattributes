@@ -1,0 +1,26 @@
+# One line ending everywhere. Without this a Windows checkout is CRLF, `rustfmt.toml` asks
+# for Unix newlines, and `cargo fmt --check` fails in CI on files nobody touched.
+* text=auto eol=lf
+
+# Windows-only files that genuinely need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.nsi text eol=crlf
+*.nsh text eol=crlf
+
+# Binary, never diffed or line-ending converted.
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.gguf binary
+*.wav binary
+*.woff binary
+*.woff2 binary
+
+# Generated: keep them out of pull-request diffs and language statistics.
+crates/dile-app/icons/** linguist-generated=true
+assets/dile.png linguist-generated=true
+Cargo.lock linguist-generated=true

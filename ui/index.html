@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dile</title>
+    <!--
+      The review panel of docs/PROJECT.md §3 — a 680 x 64 non-activating strip with a level
+      meter, an elapsed time, an editable transcript and four actions — is built in WP5.
+      WP0 ships the shell it will be built into, and the window is created hidden.
+
+      There is deliberately no build step and no npm here. nazar-tray bundles its panel with
+      esbuild because it has a panel; this repository has empty markup, and a `npm ci` in CI
+      to compile nothing would be minutes of runner time and a lockfile to keep current for
+      no output. `frontendDist` therefore points at this directory as static assets. When
+      WP5 writes real TypeScript, this becomes ui/src + ui/build.mjs and `frontendDist`
+      moves to ui/dist — the same shape as nazar-tray, arrived at when there is something to
+      compile.
+
+      Every visible word comes from locales/<lang>.json through the same lookup the Rust
+      side uses. There is no text in this file, and crates/dile-app/tests/i18n.rs is what
+      keeps it that way.
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #24262b;
+        color: #e6e6e6;
+        font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        overflow: hidden;
+        user-select: none;
+      }
+      #panel {
+        display: flex;
+        align-items: center;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="panel" aria-live="polite"></main>
+  </body>
+</html>

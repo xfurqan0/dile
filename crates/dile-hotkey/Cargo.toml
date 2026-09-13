@@ -1,0 +1,39 @@
+[package]
+name = "dile-hotkey"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Global hotkey detection for Dile, and the hold/toggle state machine behind push-to-talk."
+
+[lints.rust]
+missing_docs = "warn"
+
+[dependencies]
+thiserror = "2"
+
+# Only the OS adapter needs this, and only Windows has an adapter today. Gating the
+# dependency on the target keeps the state machine in `state.rs` buildable and testable on
+# every platform — the same rule `dile-core` follows — and keeps `evdev` and the `objc2`
+# family out of the dependency graph until the ports in WP7 actually need them.
+#
+# `handy-keys` rather than `rdev`: `docs/PROJECT.md` §3 made that call because the Windows
+# "Released" event in the alternatives was a 50 ms poll that burned a core. This crate is
+# the one `handy-keys` was extracted from (Handy), so the Windows low-level hook path is
+# the one its own product runs on.
+[target.'cfg(target_os = "windows")'.dependencies]
+handy-keys = "0.3.4"
+
+# The probe example reports the keyboard layout of the focused window, which is how
+# `docs/PROJECT.md` §3's "re-verified against IME in WP2" is actually verified: the
+# maintainer switches to the Turkish layout and reads the layout id back off the probe.
+# Nothing in the library links this.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
