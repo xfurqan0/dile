@@ -8,6 +8,7 @@
     with the same environment as the `windows` job, then the single step of the `audit` job:
 
         cmake --version
+        scripts\build-host.ps1 -Cpu -DebugBuild
         cargo fmt --all -- --check
         cargo clippy --workspace --all-targets -- -D warnings
         cargo test --workspace
@@ -311,6 +312,11 @@ Write-Note ("    CARGO_TARGET_DIR " + $cacheRoot)
 
 $steps = New-Object System.Collections.ArrayList
 [void]$steps.Add(@{ Name = "cmake --version"; Executable = "cmake"; Arguments = @("--version"); Optional = $false })
+# Both sidecars, before anything compiles dile-app: `tauri-build` checks `bundle.externalBin`
+# in the build script, so a missing one fails clippy and cargo test as well as the bundler.
+# CPU-only and debug, exactly as the workflow runs it -- this is about the configuration
+# being exercised, not about a binary that works.
+[void]$steps.Add(@{ Name = "build-host.ps1 -Cpu"; Executable = "powershell"; Arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\build-host.ps1", "-Cpu", "-DebugBuild"); Optional = $false })
 [void]$steps.Add(@{ Name = "cargo fmt --check"; Executable = "cargo"; Arguments = @("fmt", "--all", "--", "--check"); Optional = $false })
 [void]$steps.Add(@{ Name = "cargo clippy"; Executable = "cargo"; Arguments = @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings"); Optional = $false })
 [void]$steps.Add(@{ Name = "cargo test"; Executable = "cargo"; Arguments = @("test", "--workspace"); Optional = $false })

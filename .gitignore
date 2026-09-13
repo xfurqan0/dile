@@ -42,3 +42,8 @@ models/
 # because the first-run GPU probe has to be the same audio on every machine. The command
 # that regenerates it is in docs/BUILDING.md.
 !crates/dile-app/assets/probe.wav
+
+# The sidecars, copied into the name Tauri's `externalBin` expects by
+# `scripts/build-host.ps1`. Build artefacts like everything else in `target/`, and committing
+# a binary to satisfy a build step is how a repository ends up shipping a stale one.
+crates/dile-app/binaries/

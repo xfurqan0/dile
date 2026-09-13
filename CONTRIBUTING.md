@@ -5,18 +5,22 @@ that way.
 
 ## Getting set up
 
-`docs/BUILDING.md` has the prerequisites and the two traps. The short version:
+`docs/BUILDING.md` has the prerequisites and the traps. The short version:
 
 ```powershell
 rustup toolchain install stable-x86_64-pc-windows-msvc
 cargo install tauri-cli --locked
+
+# First, and before every cargo command: the application declares two sidecar binaries,
+# and `tauri-build` refuses to compile without them on disk.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-host.ps1 -Cpu -DebugBuild
 
 cargo test --workspace
 cargo tauri build --debug --no-bundle
 ```
 
 You need CMake and MSVC. You do **not** need the Vulkan SDK unless you are working on the
-GPU path.
+GPU path — that is what `-Cpu` is for.
 
 ## The rules
 

@@ -25,15 +25,38 @@ probe, with CPU as the fallback, so a release build enables `gpu-vulkan`.
 
 ## The normal build
 
+**The sidecars come first — before every cargo command, not only before the bundler.**
+`dile-app` declares two external binaries in `tauri.conf.json` (`bundle.externalBin`), and
+`tauri-build` checks for them in its build script. A missing one therefore fails `cargo
+clippy` and `cargo test` as well as `cargo tauri build`, with:
+
+```
+resource path `binaries\dile-engine-host-x86_64-pc-windows-msvc.exe` doesn't exist
+```
+
+which is the right failure and a confusing first five minutes if you have not met it before.
+One script puts both binaries there:
+
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-host.ps1 -Cpu -DebugBuild
+
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo tauri build --debug --no-bundle
 ```
 
+`-Cpu -DebugBuild` is the cheap pair and what CI runs: no Vulkan SDK, no release profile. The
+engine host it produces **cannot run the Vulkan tier** — it answers `hello` without the
+feature, and both the application and `dile transcribe` say so rather than falling back
+silently. Drop both switches for the one that ships.
+
 Roughly three minutes cold, seconds warm. Nearly all of the cold time is
 `transcribe-cpp-sys` compiling `transcribe.cpp`; nothing else in the workspace is large.
+
+The copies land in `crates/dile-app/binaries/`, which is git-ignored: they are build
+artefacts, and committing a binary to satisfy a build step is how a repository ends up
+shipping a stale one.
 
 There is **no frontend build step and no npm**, and WP5 did not change that. `ui/` is static
 markup that `frontendDist` points at directly:
@@ -238,9 +261,18 @@ in the Tauri tree, say — and the wrong one the rest of the time.
 ## The GPU build, and the one thing that breaks it
 
 ```powershell
+# What the script does, which is what to run:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-host.ps1
+
+# What it does inside, if you would rather do it by hand:
 $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
-cargo build -p dile-engine-host --features gpu-vulkan
+cargo build -p dile-engine-host --release --features gpu-vulkan
 ```
+
+`scripts\build-host.ps1` checks `VULKAN_SDK` and `vulkan-1.lib` **before** spending eight
+minutes on shaders, sets `LIB` itself, builds both sidecars and copies them into the
+target-triple name `bundle.externalBin` expects. `-Cpu` drops the feature and the SDK
+requirement; `-DebugBuild` drops the release profile.
 
 **`dile-engine-host` is the binary that matters.** It is the only crate in this workspace
 that links the runtime; the application talks to it over a pipe and has no dependency on it
@@ -274,20 +306,100 @@ SPIR-V shaders on the way. Verified on Vulkan SDK 1.4.357 with CMake 4.4.3, 2026
 | `%CARGO_TARGET_DIR%\debug\` and `\release\` | debug builds only |
 
 A `cargo build` puts both binaries in the same `target\<profile>` directory, so the second
-row covers development as well as an installation. **WP7 ships it as a Tauri sidecar**, which
-puts it next to `dile.exe` in the installation directory — the same row again. The
-application does **not** declare it as a build dependency, so `cargo tauri build` works
-whether or not the engine host has been built; a missing one is a tray tooltip and a log line
-that says which command builds it, not a broken build.
+row covers development as well as an installation. **WP7 declared it as a Tauri sidecar**,
+which puts it next to `dile-app.exe` in the installation directory — the same row again. The
+lookup did not change when the packaging did, which is why that row says *always*.
 
 The two debug-only rows exist for the one case the first row cannot cover: a test binary,
 which cargo puts in `target\debug\deps\`. That is why the round-trip test below wants
 `CARGO_TARGET_DIR` set.
 
-**CI does not build this.** The SDK is a ~250 MB download and an installer on every run, for
-a feature that is opt-in at run time and that a runner with no GPU cannot exercise anyway.
-The maintainer builds it locally, and WP7 revisits the question when the release workflow has
-to produce a GPU build.
+**What did change is that the binary is no longer optional at build time.** Before WP7 the
+application would compile without it and say so on the tray; now `bundle.externalBin` makes
+`tauri-build` refuse, and "The normal build" above is where that is spelled out. The run-time
+behaviour is unchanged: an installation that somehow lost its engine still starts, still
+records, and still says which command builds one.
+
+**CI does not build the GPU host.** The SDK is a ~250 MB download and an installer on every
+run, for a feature that a runner with no GPU cannot exercise anyway, so `ci.yml` builds a
+CPU-only debug host purely to satisfy the sidecar check. The GPU build happens in
+`.github/workflows/release.yml`, which installs a pinned SDK on the runner and caches it, and
+on the maintainer's machine before a tag.
+
+## Building the installer
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+```
+
+Four things whose order matters, which is why it is one script: the remapped environment, the
+sidecars, `cargo tauri build`, and then a check that reads the binaries back. It prints the
+three programs and the installer with their sizes and the installer's SHA-256, which is what
+`docs/RELEASE.md` step 2 asks to be kept.
+
+**The check is the part worth knowing about.** Every `panic!`, `unwrap()` and `GGML_ASSERT`
+compiles the source file it came from in as a string literal, and `strip = true` does not
+touch those — so a release build can carry the path every crate was compiled from, which on
+a laptop is an account name inside an installer anyone can download. Measured on this tree
+before the fix: **159** copies in `dile.exe`, **23** in `dile-engine-host.exe`, none of them
+visible to any grep over the working tree.
+
+Two different fixes, because there are two compilers:
+
+| Half | Flag | Where |
+|---|---|---|
+| Rust | `--remap-path-prefix`, three prefixes | `CARGO_ENCODED_RUSTFLAGS`, set by the script |
+| C and C++ (ggml, through CMake) | `/d1trimfile:` — undocumented, and MSVC's only answer | `CFLAGS` / `CXXFLAGS`, set by the script |
+
+`scripts\check-binary-paths.ps1` is the proof that both still work, and `build-installer.ps1`
+**deletes the bundle** if either fails, so an installer that exists after it ran is one that
+passed. Run the check on its own whenever something has touched `target\release`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-binary-paths.ps1
+```
+
+```text
+target\release\dile-app.exe                          5.83 MB  0 match(es)
+target\release\dile-engine-host.exe                 54.89 MB  0 match(es)
+target\release\dile.exe                              2.38 MB  0 match(es)
+no machine-specific paths in any of them
+```
+
+One trap: **cargo does not rebuild the native library when `CFLAGS` changes**, because
+`transcribe-cpp-sys` declares no `rerun-if-env-changed` for it. A tree that already built
+ggml without the trim keeps what it has, the check goes red naming `ggml`, and the fix is
+`cargo clean -p transcribe-cpp-sys --release` followed by another run. The script's failure
+message says so.
+
+## The command line
+
+`dile transcribe <file.wav>` is the second sidecar. It reads the same `settings.json`, runs
+the tier the same `engine.json` records and loads the same weights, so it is the product
+rather than a second one:
+
+```powershell
+cargo run -p dile-cli -- transcribe crates\dile-app\assets\probe.wav --json
+```
+
+```text
+2.04 s of audio, 16000 Hz 1 channel(s) -> 16 kHz mono
+loading ggml-large-v3-q5_0.bin on the vulkan tier
+{
+  "raw": "Bugün hava çok güzel ve deniz sakin.",
+  "cleaned": "Bugün hava çok güzel ve deniz sakin.",
+  "segments": [ { "start_ms": 0, "end_ms": 2040, "text": "Bugün hava çok güzel ve deniz sakin." } ],
+  "took_ms": 307,
+  "device": "Vulkan0",
+  "model": "ggml-large-v3-q5_0.bin"
+}
+```
+
+It finds `dile-engine-host` the same way the application does — beside itself — so in a
+development tree `scripts\build-host.ps1` has to have run, and a `cargo run` of it works
+because cargo puts both binaries in the same directory. A machine with no `engine.json` is
+told to start Dile once rather than being probed: the probe costs a cold model load and
+belongs to the application.
 
 ## Running the engine against a real model
 

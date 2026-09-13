@@ -40,6 +40,20 @@ jobs:
       - name: Check CMake is present
         run: cmake --version
 
+      # `bundle.externalBin` is checked by `tauri-build`, so both sidecars have to be on disk
+      # before anything compiles `dile-app` — clippy and `cargo test` included, not only the
+      # bundler. A missing one fails with "resource path
+      # binaries\dile-engine-host-x86_64-pc-windows-msvc.exe doesn't exist", which is the
+      # right failure and the wrong time to meet it.
+      #
+      # CPU-only and debug: the Vulkan SDK is a ~250 MB download and an installer, for a
+      # feature a runner with no GPU could not exercise anyway. What this proves is that the
+      # configuration is exercised on every pull request; that the GPU host builds is
+      # `release.yml`'s job, and the maintainer's.
+      - name: Prepare the sidecars
+        shell: pwsh
+        run: ./scripts/build-host.ps1 -Cpu -DebugBuild
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -52,8 +66,8 @@ jobs:
       # GPU could not exercise anyway. Every test that would need a GPU, a network or a real
       # model is `#[ignore]`d; the resume test runs against a server it starts itself. The
       # maintainer builds the GPU host locally before every release — docs/BUILDING.md has
-      # the recipe, including the `LIB` variable the SDK installer does not set — and WP7
-      # revisits this when the release workflow has to bundle one as a sidecar.
+      # the recipe, including the `LIB` variable the SDK installer does not set — and
+      # `release.yml` installs the SDK on the runner for the one build that ships.
       - name: Test the workspace
         run: cargo test --workspace
 
@@ -63,8 +77,10 @@ jobs:
 
       # Proves the tray application links and its Tauri context expands: `generate_context!`
       # reads tauri.conf.json, the capability files and ui/ at compile time, so a broken
-      # config fails here rather than at bundle time. `--no-bundle` keeps NSIS and MSI out of
-      # the loop until WP7.
+      # config fails here rather than at bundle time. `--no-bundle` stays after WP7: the
+      # bundler is the fragile part of a Windows pipeline (WebView2, NSIS, signing) and a
+      # bundler problem must not make a correct change look broken. `release.yml` is where the
+      # installer is a gate, on a tag, with the Vulkan SDK installed.
       - name: Build the tray application
         run: cargo tauri build --debug --no-bundle
 
