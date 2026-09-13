@@ -100,6 +100,16 @@ impl EngineClient {
     pub fn submit(&self, samples: Vec<f32>) {
         self.queue.submit(samples);
     }
+
+    /// Tell the engine the application is closing.
+    ///
+    /// Returns immediately as well, and deliberately does not wait: the supervisor may be a
+    /// long way inside a half-gigabyte download, and the point of saying so is that the
+    /// transfer stops between chunks rather than in the middle of a write. What is already
+    /// in the `.part` is what the next start resumes from.
+    pub fn stop(&self) {
+        self.queue.stop();
+    }
 }
 
 /// What wakes the supervisor.
@@ -148,6 +158,14 @@ impl Queue {
     fn host_down(&self, generation: u64) {
         if let Ok(mut pending) = self.inner.lock() {
             pending.down = Some(pending.down.map_or(generation, |seen| seen.max(generation)));
+            self.wake.notify_all();
+        }
+    }
+
+    /// Say that the application is closing.
+    fn stop(&self) {
+        if let Ok(mut pending) = self.inner.lock() {
+            pending.stop = true;
             self.wake.notify_all();
         }
     }
@@ -824,6 +842,24 @@ mod tests {
             Wake::HostDown(generation) => assert_eq!(generation, 2),
             _ => panic!("a crash must be reported"),
         }
+    }
+
+    #[test]
+    fn a_shutdown_outranks_everything_else_in_the_queue() {
+        let queue = Queue::default();
+        queue.submit(vec![0.25]);
+        queue.host_down(1);
+        assert!(!queue.stopping());
+
+        queue.stop();
+        assert!(
+            queue.stopping(),
+            "the downloader has to see this between chunks"
+        );
+        assert!(
+            matches!(queue.take(), Wake::Stop),
+            "a recording and a crash both wait for an application that is closing"
+        );
     }
 
     #[test]

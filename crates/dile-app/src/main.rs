@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use config::AppConfig;
 use i18n::Strings;
+use tauri::Manager;
 use ui::Ui;
 
 fn main() {
@@ -89,12 +90,24 @@ fn main() {
             // because a tray application that will not respond to its hotkey until a
             // gigabyte has arrived is one nobody would leave running.
             let engine = engine::EngineClient::start(ui.clone(), &config);
+            // Handed to the run loop below, which is the only thing that knows when the
+            // application is closing.
+            app.manage(engine.clone());
 
             // The hook is installed last, so a failure has an icon to be reported next to —
             // and so the first state the user sees is the one the application is in.
             session::start(ui, config, engine)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Dile failed to start");
+        .build(tauri::generate_context!())
+        .expect("Dile failed to start")
+        // `build` + `run` rather than `Builder::run`, for one event. The engine's thread can
+        // be a long way inside something when the user picks Quit — half of a half-gigabyte
+        // download, most likely — and `Exit` is the only place that knows to tell it to stop
+        // between chunks rather than in the middle of a write.
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<engine::EngineClient>().stop();
+            }
+        });
 }
