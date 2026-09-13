@@ -13,7 +13,7 @@ Nothing has been released. The work packages that get to a first release are in
 
 - **WP5b — the panel, and the paste that ends a dictation.** The product loop closes here.
   Hold the key, speak, let go: the cleaned text appears in a card at the top of the monitor
-  the focused window was on, and 1.5 s later it is in that window with your own clipboard put
+  the focused window was on, and 2.5 s later it is in that window with your own clipboard put
   back. Cancel it, edit it, copy it instead, re-run the cleanup at another strictness, or look
   at what the engine actually wrote — all before a single character lands anywhere.
   - **The panel never takes the focus**, which is the whole design. `focusable: false` is

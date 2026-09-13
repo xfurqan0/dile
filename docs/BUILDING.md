@@ -117,7 +117,7 @@ cargo tauri dev
 **The loop.** Put the caret in a text field — Notepad will do — hold **`Ctrl+Alt+Space`**, say
 a sentence, let go. The card appears at the top of the screen with the microphone level moving
 in it, then says what it is doing while the engine works, then shows the cleaned text with a
-thin green line running out underneath. Do nothing and the sentence is in the field 1.5 s
+thin green line running out underneath. Do nothing and the sentence is in the field 2.5 s
 later.
 
 | Check | What proves it |

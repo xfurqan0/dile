@@ -90,9 +90,15 @@ pub const LEVEL_INTERVAL_MS: u32 = 50;
 
 /// How long the panel waits before transferring by itself, in milliseconds.
 ///
-/// `docs/PROJECT.md` §3: "auto-transferred after 1.5 s unless the user presses ✗ or starts
+/// `docs/PROJECT.md` §3: "auto-transferred after 2.5 s unless the user presses ✗ or starts
 /// editing".
-pub const DEFAULT_AUTO_TRANSFER_MS: u32 = 1_500;
+///
+/// **1.5 s was the designed number and 2.5 s is the measured one.** The maintainer's hand
+/// test of 2026-09-13 — the one WP5b was waiting for — passed on every target it was run
+/// against and asked for exactly one change: the countdown was too fast to read a sentence
+/// in before it fired. This is a default, not a rule: a `settings.json` that already carries
+/// a number keeps it, and only a new installation starts here.
+pub const DEFAULT_AUTO_TRANSFER_MS: u32 = 2_500;
 
 /// The shortest auto-transfer delay the settings accept, in milliseconds.
 ///

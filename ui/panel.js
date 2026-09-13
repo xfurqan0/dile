@@ -56,7 +56,7 @@ let strings = {};
 let context = {
   hotkey: "",
   auto_transfer: true,
-  auto_transfer_ms: 1500,
+  auto_transfer_ms: 2500,
   cap_ms: 60000,
   strictness: "medium",
   target_label: null,

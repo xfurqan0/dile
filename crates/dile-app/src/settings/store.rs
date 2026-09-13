@@ -324,7 +324,7 @@ mod tests {
         // The delay the panel reads when it next opens raises no flag at all: it is written
         // to disk and read when the panel opens, and nothing running has to be told.
         let mut delay = base.clone();
-        delay.cleanup.auto_transfer_ms = 2_500;
+        delay.cleanup.auto_transfer_ms = 3_000;
         let quiet = Change::between(&base, &delay);
         assert!(!quiet.hotkey);
         assert!(!quiet.capture);
