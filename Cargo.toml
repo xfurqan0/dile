@@ -4,6 +4,7 @@ members = [
     "crates/dile-engine",
     "crates/dile-engine-proto",
     "crates/dile-engine-host",
+    "crates/dile-client",
     "crates/dile-hotkey",
     "crates/dile-capture",
     "crates/dile-app",

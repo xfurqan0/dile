@@ -3,7 +3,7 @@
 //! [`HostProcess`] owns one `dile-engine-host`: its pipes, the thread that reads its
 //! answers, the thread that forwards its log, and the promise that dropping it leaves no
 //! process behind. Everything above it — the tier, the model, the queue — is
-//! [`crate::engine`]'s; everything below it is the runtime's.
+//! the supervisor's; everything below it is the runtime's.
 //!
 //! **Every request has a deadline.** The runtime can block for as long as it likes and the
 //! application cannot afford to: a Vulkan driver that is compiling two thousand shaders
@@ -61,10 +61,13 @@ pub fn transcribe_timeout(samples: usize) -> Duration {
 pub enum HostError {
     /// The engine binary is not next to the application.
     ///
-    /// A packaging failure rather than a run-time one: WP7 ships it as a sidecar, and until
-    /// then a `cargo build` that skipped `-p dile-engine-host` produces exactly this.
+    /// A packaging failure rather than a run-time one. An installed Dile carries
+    /// `dile-engine-host` as a Tauri sidecar, which the bundler puts next to the application
+    /// executable; a development tree gets it from `cargo build`, into the same
+    /// `target/<profile>` directory the application is in. Neither is a thing that happens
+    /// by accident, so this error names the command rather than the cause.
     #[error(
-        "the engine binary is not beside the application; build it with: cargo build -p dile-engine-host"
+        "the engine binary is not beside the application; an installation carries it as a sidecar, and a development build needs: cargo build -p dile-engine-host"
     )]
     NotFound,
     /// The process would not start.
@@ -369,12 +372,24 @@ fn spawn_log_forwarder(stderr: std::process::ChildStderr, pid: u32) {
 
 /// Find the engine binary.
 ///
-/// **Beside the application first.** WP7 bundles `dile-engine-host` as a Tauri sidecar,
-/// which puts it in the installation directory next to `dile.exe`; a `cargo build` puts both
-/// in the same `target/<profile>` directory, so the first candidate is the only one that is
-/// needed in either case. The two after it are debug-build conveniences and a release build
-/// does not contain them — a released product that took the path of a process it is about to
-/// start from the environment would be one an attacker could aim.
+/// | Where | When |
+/// |---|---|
+/// | `DILE_ENGINE_HOST` | debug builds only, and only if it names a file |
+/// | **beside the running executable** | always — and the only one a release build has |
+/// | `%CARGO_TARGET_DIR%\debug\` and `\release\` | debug builds only |
+///
+/// **Beside the application first, and that one row is both cases.** `dile-engine-host` is
+/// declared as a Tauri sidecar (`bundle.externalBin`), so the bundler drops it into the
+/// installation directory next to the application executable with the target triple stripped
+/// off its name; a `cargo build` puts both binaries in the same `target/<profile>` directory.
+/// The same lookup finds it either way, which is why the sidecar declaration changed the
+/// packaging and not this function.
+///
+/// The two rows around it are debug-build conveniences and **a release build does not
+/// contain them** — a released product that took the path of a process it is about to start
+/// from the environment would be one an attacker could aim. `CARGO_TARGET_DIR` exists for
+/// the one case the middle row cannot cover: a test binary, which cargo puts in
+/// `target/debug/deps/`.
 fn locate() -> Option<PathBuf> {
     let file_name = format!("{HOST_STEM}{}", std::env::consts::EXE_SUFFIX);
 

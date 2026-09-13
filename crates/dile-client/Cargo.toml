@@ -1,0 +1,42 @@
+[package]
+name = "dile-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Everything Dile knows without a window: the settings file, the tier record, the model table and the client side of the engine process."
+
+[lints.rust]
+missing_docs = "warn"
+
+[dependencies]
+# The version is carried next to the path on purpose: a bare `path` is a wildcard
+# requirement, and `deny.toml` refuses those. It tracks `workspace.package.version`.
+dile-core = { path = "../dile-core", version = "0.1.0" }
+dile-capture = { path = "../dile-capture", version = "0.1.0" }
+dile-hotkey = { path = "../dile-hotkey", version = "0.1.0" }
+dile-engine-proto = { path = "../dile-engine-proto", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+
+# Reported through `log` rather than printed: the tray installs `env_logger`, the CLI
+# installs nothing and the lines vanish, and neither of them has this crate deciding where
+# a diagnostic goes.
+log = "0.4.34"
+
+# Error types with their message on the variant, as everywhere else in this workspace.
+thiserror = "2"
+
+# The model downloader. `rustls` rather than the system stack because the one host this
+# product ever reaches is `huggingface.co` over HTTPS and a pure-Rust TLS stack needs no
+# OpenSSL on the platforms WP7 has to cross-build for. Default features are off: JSON,
+# gzip, cookies, charset conversion and SOCKS are all things a `GET` of a 574 MB file with
+# a `Range` header does not need.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+
+# The checksum every downloaded model is verified against before it is renamed into place
+# (`docs/PROJECT.md` §3, Distribution: "sha256 embedded in the app").
+sha2 = "0.10.9"

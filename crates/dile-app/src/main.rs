@@ -114,7 +114,7 @@ fn main() {
         .setup(|app| {
             // One settings document for the whole process, read once. Every value the
             // application used to hold as a constant comes out of here.
-            let store = match Settings::path(app.handle()) {
+            let store = match settings::path(app.handle()) {
                 Ok(path) => SettingsStore::open(path),
                 Err(error) => {
                     // No configuration directory means no file to read or write. The

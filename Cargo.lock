@@ -701,6 +701,7 @@ name = "dile-app"
 version = "0.1.0"
 dependencies = [
  "dile-capture",
+ "dile-client",
  "dile-core",
  "dile-engine-proto",
  "dile-hotkey",
@@ -709,14 +710,12 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "sha2",
  "sys-locale",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-dialog",
  "thiserror 2.0.20",
- "ureq",
  "windows 0.61.3",
 ]
 
@@ -731,6 +730,22 @@ dependencies = [
  "rtrb",
  "rubato",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "dile-client"
+version = "0.1.0"
+dependencies = [
+ "dile-capture",
+ "dile-core",
+ "dile-engine-proto",
+ "dile-hotkey",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "ureq",
 ]
 
 [[package]]

@@ -30,8 +30,6 @@
 //! survives its engine, and an application that stops recording because it cannot
 //! transcribe has not survived anything.
 
-pub mod download;
-pub mod host;
 pub mod models;
 pub mod probe;
 pub mod state;
@@ -54,6 +52,16 @@ use host::{HostError, HostProcess};
 use models::ModelSpec;
 use probe::ProbeError;
 use state::{EnginePayload, EngineState, ProbeResult, TierRecord};
+
+/// The client side of the engine process, and the downloader that puts weights in front of
+/// it.
+///
+/// Both live in `dile-client` rather than here because `dile transcribe` starts the same
+/// host the same way — the same deadlines, the same kill-by-pid on a wedged one — and
+/// fetches the same weights, pinned to the same commit and checked against the same hash.
+/// These re-exports are so that the supervisor below still says `host::HostProcess` and
+/// `download::fetch`.
+pub use dile_client::{download, host};
 
 /// How many times in a row the engine process may go down before it is left down.
 ///
@@ -523,12 +531,12 @@ impl Supervisor {
             hello.features.join(", ")
         );
         if !hello.features.iter().any(|feature| feature == "gpu-vulkan") {
-            return Ok(ProbeResult::refused(&ProbeError::NoGpuSupport));
+            return Ok(refused(&ProbeError::NoGpuSupport));
         }
 
         #[cfg(debug_assertions)]
         if std::env::var("DILE_FORCE_PROBE_FAIL").is_ok_and(|value| value == "1") {
-            return Ok(ProbeResult::refused(&ProbeError::Forced));
+            return Ok(refused(&ProbeError::Forced));
         }
 
         // The Vulkan tier's weights have to be on disk before the Vulkan tier can be probed.
@@ -539,12 +547,12 @@ impl Supervisor {
         self.announce(EngineState::Probing);
         let samples = match probe::samples() {
             Ok(samples) => samples,
-            Err(error) => return Ok(ProbeResult::refused(&error)),
+            Err(error) => return Ok(refused(&error)),
         };
 
         let started = Instant::now();
         if let Err(error) = self.load(&path, Device::Vulkan) {
-            return Ok(ProbeResult::refused(&error));
+            return Ok(refused(&error));
         }
         let load_ms = millis(&started);
 
@@ -557,9 +565,9 @@ impl Supervisor {
             match host.transcribe(&samples, &language, "") {
                 Ok(response) => response,
                 Err(error) => {
-                    let mut refused = ProbeResult::refused(&error);
-                    refused.load_ms = load_ms;
-                    return Ok(refused);
+                    let mut result = refused(&error);
+                    result.load_ms = load_ms;
+                    return Ok(result);
                 }
             }
         };
@@ -977,6 +985,15 @@ const fn resting_for(tier: Device) -> Status {
         Device::Vulkan => Status::Idle,
         Device::Cpu => Status::CpuTier,
     }
+}
+
+/// A probe that never ran, scored against the clip this application actually ships.
+///
+/// [`ProbeResult::refused`] takes the word count rather than reading a constant, because the
+/// record lives in `dile-client` and the clip lives here. This is the one place that pairing
+/// is made, so `expected_words` cannot drift from [`probe::WORDS`].
+fn refused(error: &impl std::fmt::Display) -> ProbeResult {
+    ProbeResult::refused(probe::WORDS.len(), error)
 }
 
 /// Elapsed milliseconds, saturating rather than wrapping.

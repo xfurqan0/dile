@@ -1,28 +1,24 @@
-//! What the engine is doing, and the file that remembers which tier this machine is on.
+//! What the engine is doing, and where the tier decision is kept.
 //!
-//! Two things live here because they are two halves of one answer. [`EngineState`] is the
-//! moment-to-moment report the tray and the panel read; [`TierRecord`] is the decision that
-//! outlives the process, so that the probe of `docs/PROJECT.md` §3 runs **once per machine**
-//! rather than once per start-up — a Vulkan probe costs a cold model load, and paying that
-//! on every launch would be a worse product than the one the probe exists to protect.
+//! [`EngineState`] is the moment-to-moment report the tray and the panel read: not a tier,
+//! not a file, just what the supervisor is doing at this instant. It is the tray's alone,
+//! which is why it stayed here when the rest moved.
 //!
-//! **`engine.json` is a stop-gap with a successor already named.** WP5 owns the settings
-//! file and the settings window, and the tier is one of the things it puts on a form ("the
-//! tier stays visible and switchable in settings", §3). When that file exists this record
-//! folds into it; until then a machine that has decided needs somewhere to say so, and one
-//! small file with one small shape is easier to migrate than a decision taken again every
-//! morning.
+//! The decision that **outlives the process** did move: [`TierRecord`] and the two functions
+//! that read and write it live in [`dile_client::tier`], because `dile transcribe` runs on
+//! the tier this machine decided rather than probing again on its own. They are re-exported
+//! here so that the supervisor still says `state::read_tier`, and [`tier_path`] is the one
+//! line that needs an `AppHandle`.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 use dile_engine_proto::Device;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-/// The file the tier decision is kept in, inside the application's config directory.
-const TIER_FILE: &str = "engine.json";
+pub use dile_client::tier::{
+    self, ProbeResult, TierRecord, read as read_tier, write as write_tier,
+};
 
 /// What the engine is doing right now.
 ///
@@ -116,122 +112,22 @@ impl EnginePayload {
     }
 }
 
-/// What the first-run probe saw, in fields rather than in a sentence.
-///
-/// A sentence would be shorter to write and worse to have: this is read back by the next
-/// start-up, quoted in bug reports, and — from WP5 — shown on a settings page that has to
-/// render it in the user's language. A record with `passed: false` and `load_ms: 118_000`
-/// says "the driver took two minutes to load the model and then timed out" to anybody who
-/// looks; the same thing in English prose says it to half of them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProbeResult {
-    /// Whether the device produced enough of the sentence to be trusted.
-    pub passed: bool,
-    /// The backend the runtime reported, which is not always the one that was asked for.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub device: String,
-    /// How long the model took to load, in milliseconds. The cold Vulkan number is the
-    /// interesting one: it includes the driver compiling its shader cache.
-    pub load_ms: u64,
-    /// How long the probe transcription took, in milliseconds.
-    pub probe_ms: u64,
-    /// How many of the expected words came back.
-    pub words: usize,
-    /// How many there were to find.
-    pub expected_words: usize,
-    /// The failure, as the error that caused it describes itself. Absent when it passed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl ProbeResult {
-    /// A probe that never ran, because something stopped it before the device was asked.
-    #[must_use]
-    pub fn refused(error: &impl std::fmt::Display) -> Self {
-        ProbeResult {
-            expected_words: crate::engine::probe::WORDS.len(),
-            error: Some(error.to_string()),
-            ..ProbeResult::default()
-        }
-    }
-}
-
-/// The tier this machine decided on, and what the probe saw.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TierRecord {
-    /// The tier to use from now on.
-    pub tier: Device,
-    /// When it was decided, in seconds since the Unix epoch.
-    ///
-    /// A number rather than a formatted date, because formatting one would mean a calendar
-    /// crate for a field nothing reads back as a date. WP5 shows it on the settings page and
-    /// can format it there, where a locale is already in hand.
-    pub decided_at: u64,
-    /// What the probe saw.
-    pub probe_result: ProbeResult,
-}
-
-impl TierRecord {
-    /// A record of a decision taken now.
-    #[must_use]
-    pub fn taken(tier: Device, probe_result: ProbeResult) -> Self {
-        TierRecord {
-            tier,
-            decided_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|since| since.as_secs())
-                .unwrap_or_default(),
-            probe_result,
-        }
-    }
-}
-
 /// Where the tier record lives: `<app config>/engine.json`.
-pub fn tier_path(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
-    Ok(app.path().app_config_dir()?.join(TIER_FILE))
-}
-
-/// Read the tier record, or `None` when this machine has not decided yet.
 ///
-/// A file that will not parse is treated as no decision rather than as an error: the worst
-/// it costs is one probe, and refusing to start over a damaged 80-byte file would be the
-/// wrong trade every time.
-#[must_use]
-pub fn read_tier(path: &Path) -> Option<TierRecord> {
-    let text = fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(record) => Some(record),
-        Err(error) => {
-            log::warn!(
-                "{} did not parse, so the tier is decided again: {error}",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-/// Write the tier record, creating the directory if it is not there.
+/// The same directory as `settings.json` — see [`crate::settings::path`], which names the
+/// other file in it.
 ///
 /// # Errors
 ///
-/// The directory could not be created, the file could not be written, or the record would
-/// not serialize.
-pub fn write_tier(path: &Path, record: &TierRecord) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let text = serde_json::to_string_pretty(record)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    fs::write(path, text)
+/// The platform would not name a configuration directory.
+pub fn tier_path(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
+    Ok(app.path().app_config_dir()?.join(tier::FILE))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EnginePayload, EngineState, ProbeResult, TierRecord, read_tier, write_tier};
-    use crate::engine::probe::ProbeError;
+    use super::{EnginePayload, EngineState};
     use dile_engine_proto::Device;
-    use std::fs;
 
     #[test]
     fn every_state_has_a_distinct_name_and_only_the_right_ones_carry_a_tier() {
@@ -283,43 +179,5 @@ mod tests {
         assert_eq!(downloading["state"], "downloading");
         assert_eq!(downloading["progress"], 7);
         assert!(downloading["tier"].is_null());
-    }
-
-    #[test]
-    fn a_tier_record_survives_the_round_trip_and_a_damaged_file_is_no_decision() {
-        let directory = std::env::temp_dir().join(format!(
-            "dile-tier-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let path = directory.join("engine.json");
-
-        let record = TierRecord::taken(
-            Device::Cpu,
-            ProbeResult {
-                passed: false,
-                device: "cpu".to_string(),
-                load_ms: 9_120,
-                probe_ms: 4_400,
-                words: 1,
-                expected_words: 7,
-                error: Some(ProbeError::WrongWords {
-                    matched: 1,
-                    expected: 7,
-                })
-                .map(|error| error.to_string()),
-            },
-        );
-        write_tier(&path, &record).expect("write the record");
-        assert_eq!(read_tier(&path), Some(record));
-
-        // Not a decision, and not a panic either: the probe simply runs again.
-        fs::write(&path, "{ this is not json").expect("damage the file");
-        assert_eq!(read_tier(&path), None);
-
-        // And a machine that has never decided has no file at all.
-        fs::remove_file(&path).expect("remove");
-        assert_eq!(read_tier(&path), None);
-        let _ = fs::remove_dir_all(&directory);
     }
 }
