@@ -11,6 +11,41 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Added
 
+- **WP5b — the panel, and the paste that ends a dictation.** The product loop closes here.
+  Hold the key, speak, let go: the cleaned text appears in a card at the top of the monitor
+  the focused window was on, and 1.5 s later it is in that window with your own clipboard put
+  back. Cancel it, edit it, copy it instead, re-run the cleanup at another strictness, or look
+  at what the engine actually wrote — all before a single character lands anywhere.
+  - **The panel never takes the focus**, which is the whole design. `focusable: false` is
+    `WS_EX_NOACTIVATE` on Windows, so the editor behind the card keeps its caret, its
+    selection and its focus ring. Enter, Esc and `Ctrl+C` are therefore read from the global
+    keyboard hook rather than from the page — and **blocked while the panel is up**, because
+    an Enter that also reached the editor would paste a sentence *and* a newline. Clicking
+    into the text is the one gesture that activates the panel, and the target window gets the
+    focus back before anything is pasted.
+  - **The paste knows when it has happened.** Dile does not write the clipboard and wait: it
+    offers the text as a *delayed render*, sends `Ctrl+V` — `Ctrl+Shift+V` for the terminal
+    family — and is told by Windows the moment the target asks for the text. Only then is the
+    previous clipboard restored. A target that never pastes times out after two seconds with
+    a line in the log, and the clipboard goes back anyway. **Text is restored byte for byte;
+    other clipboard formats are not**, and `docs/PROJECT.md` §3 says so rather than leaving it
+    to be found out.
+  - **It says where it is going.** The window the dictation was aimed at is captured when the
+    recording *starts*, not when the text comes back, and the panel shows its name — "→ VS
+    Code", "→ Windows Terminal". A window that has gone by the time the text is ready takes
+    the paste with it: the text stays in the panel and says so, rather than landing in
+    whatever inherited the focus.
+  - **A card that fits what is in it.** 680 × 64 while recording and working, growing to three
+    lines of text and then scrolling inside itself; a level meter that moves with the
+    microphone, an elapsed clock against the cap, an honest working line that names the model
+    and the tier, and a thin countdown line rather than a number. Draggable, and remembered
+    per monitor. The countdown stops if you press ✗, if you edit the text, or if you simply
+    rest the pointer on it for a third of a second — because that is what reading looks like.
+  - **All the unsafe code in the application is now in one module** (`src/win32/`), and the
+    crate says `deny(unsafe_code)` rather than `forbid` for exactly that reason. The decisions
+    about pasting — which chord, which application name, what to restore — are ordinary unit
+    tests that run on a machine with no clipboard.
+
 - **WP5a — settings: a file, a window, and nothing that needs a restart.** Everything
   `docs/PROJECT.md` calls a setting is now something a person can change while Dile is
   running: the chord, hold or toggle, the second key, the recording cap, the microphone, the

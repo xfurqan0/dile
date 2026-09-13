@@ -104,6 +104,66 @@ chord while it runs, and never the second key — `Ctrl+C` keeps working. The ca
 records five seconds with a two-second cap, so the cap fires on purpose, draws the level bar
 at 20 Hz and writes `out.wav` next to you.
 
+## Trying the panel
+
+WP5b's acceptance criteria are all about a person holding a key and watching where the text
+lands, so none of them is a test the suite can run. This is how they get checked. Everything
+below is one `cargo tauri dev` and a Notepad.
+
+```powershell
+cargo tauri dev
+```
+
+**The loop.** Put the caret in a text field — Notepad will do — hold **`Ctrl+Alt+Space`**, say
+a sentence, let go. The card appears at the top of the screen with the microphone level moving
+in it, then says what it is doing while the engine works, then shows the cleaned text with a
+thin green line running out underneath. Do nothing and the sentence is in the field 1.5 s
+later.
+
+| Check | What proves it |
+|---|---|
+| The target keeps the focus | The caret in the text field **keeps blinking** the whole time the card is up, and the field keeps its selection. If it stops, `WS_EX_NOACTIVATE` is not on the window — the log says which at start-up: `panel window: hwnd 0x…, non-activating true`. |
+| The card is on the right screen | With two monitors, dictate into a window on the **second** one. The card appears above that window, not on the primary. |
+| Enter transfers, Esc cancels | Both are read from the global hook, so they work without clicking the card. Esc during a *recording* throws the audio away; Esc after one closes the card and pastes nothing. |
+| Enter does not also reach the editor | Press Enter to transfer into a text field: the sentence arrives and **no newline follows it**. That is the hook blocking the key. |
+| Editing then ✓ pastes the edit | Click into the text, change a word, press Enter. What lands is what is on screen, not what the engine said. |
+| The clipboard comes back | Copy something first (`dile önceki`), dictate, let it transfer, then paste by hand somewhere: **`dile önceki`**, not the dictation. |
+| Copy does *not* restore | Dictate, press **Copy**. The clipboard now holds the dictation and keeps it — that is the one place the two paths differ on purpose. |
+| Cancel leaves the clipboard alone | Copy something, dictate, press Esc. The clipboard is untouched: nothing was ever put on it. |
+| The terminal gets the right chord | Dictate into **Windows Terminal**. It pastes, which means `Ctrl+Shift+V` went out — `Ctrl+V` would have done nothing there. The log names the chord and the application. |
+| A gone window is not pasted into | Dictate into a Notepad, then close it *while the card is up*. The card says the window is gone and keeps the text for you to copy. |
+| The countdown is stoppable three ways | ✗, any edit, and **resting the pointer on the text for a third of a second**. The green line stops in all three. |
+| The strictness pills re-clean | Click *strict*: the sentence changes, and the countdown starts again from the top so there is time to read the new one. `ham` shows what the engine actually wrote. |
+| The card is draggable and remembered | Drag it somewhere, dictate again: it comes back where you left it. The position is per monitor, in `settings.json` under `ui.panel_position`. |
+
+**Where the text goes is worth checking in four different kinds of window**, because they
+handle pasting differently: **VS Code** (Electron), **Windows Terminal** (`Ctrl+Shift+V`), a
+**browser** text field, and **Notepad** (a packaged application with a XAML editor).
+
+**Without a microphone**, the four states can still be looked at:
+
+```powershell
+$env:DILE_OPEN_PANEL = "result"; cargo tauri dev
+```
+
+**The paste, end to end, by machine.** One test does the whole thing against a real window and
+a real clipboard, and it is `#[ignore]` because it opens a Notepad on whoever's desktop is
+running it and takes the machine's clipboard for a second:
+
+```powershell
+cargo test -p dile-app --bin dile-app -- --ignored --nocapture notepad
+```
+
+```text
+target: C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_…\Notepad.exe hwnd 0x80882
+outcome: Pasted
+notepad said: "Non Client Input Sink Window\ndile test"
+clipboard after: Some("dile onceki pano")
+```
+
+`outcome: Pasted` is the receipt: it means Windows asked this process to hand the text over,
+which is the only proof that a paste actually happened rather than a key that went nowhere.
+
 ## Regenerating the tray icons
 
 The tray shows one of three icons — `crates/dile-app/icons/tray-idle.png`,
@@ -274,8 +334,8 @@ cleaned:  Bugün hava çok güzel ve deniz sakin.
 
 ### The debug-only environment switches
 
-Three variables exist so that the paths a person normally has to click through can be run
-from a terminal. All three are behind `#[cfg(debug_assertions)]`: **a release build does not
+These variables exist so that the paths a person normally has to click through can be run
+from a terminal. All of them are behind `#[cfg(debug_assertions)]`: **a release build does not
 contain the code that reads them.**
 
 | Variable | What it does |
@@ -285,6 +345,14 @@ contain the code that reads them.**
 | `DILE_FORCE_PROBE_FAIL=1` | makes the first-run GPU probe fail, so the CPU fallback tier can be exercised on a machine whose GPU works |
 | `DILE_OPEN_SETTINGS=1` | opens the settings window at start-up, because nothing can click a tray menu from a script |
 | `DILE_OPEN_SETTINGS=<group>` | the same, on a chosen group: `hotkey`, `cleanup`, `engine`, `dictionary` or `general` |
+| `DILE_OPEN_PANEL=<state>` | renders the review panel with sample text: `recording`, `working`, `result` or `nothing` |
+
+`DILE_OPEN_PANEL` exists because there is no way to speak into a microphone from a script, so
+"does the result state still lay out at two lines" is otherwise a question nobody can answer
+from a terminal. The card waits for the page to load, then stays up: a preview **does not
+count down and does not close itself**, and it deliberately does **not** arm the panel's three
+keys — a preview that swallowed Esc for the whole machine while somebody was photographing it
+would be a worse bug than the one it was helping to find.
 
 `DILE_MODEL_DIR` is how a machine that already holds these weights avoids downloading a
 second copy. The tier decision lives in `%APPDATA%\io.github.xfurqan0.dile\engine.json`;
