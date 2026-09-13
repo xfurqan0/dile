@@ -22,6 +22,15 @@
 //! read, converted and handed to a local process. A missing model prints the consent question
 //! and stops; `--yes` is the answer, and there is no way to agree by accident.
 //!
+//! **English only, and that is a decision rather than an omission.** Every word the graphical
+//! side shows comes from `locales/<lang>.json`, and a test fails the build on a hard-coded
+//! sentence anywhere under `crates/dile-app/src` or `ui/`. This crate is deliberately outside
+//! that rule: its output is read by a terminal, a log and a script as often as by a person,
+//! and a `--json` document whose sibling diagnostics change language with a settings file is
+//! harder to support, not friendlier. The product's *content* — the transcript, the
+//! dictionary, the cleanup — is Turkish first either way, because that comes from the engine
+//! and `dile-core`, not from here.
+//!
 //! ```text
 //!   dile transcribe take.wav --json
 //!     │
