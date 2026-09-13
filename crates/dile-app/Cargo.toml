@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 dile-core = { path = "../dile-core", version = "0.1.0" }
 dile-capture = { path = "../dile-capture", version = "0.1.0" }
 dile-hotkey = { path = "../dile-hotkey", version = "0.1.0" }
+dile-engine-proto = { path = "../dile-engine-proto", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 
@@ -31,15 +32,36 @@ serde_json.workspace = true
 env_logger = { version = "0.11.6", default-features = false }
 log = "0.4.34"
 
-# Debug builds only, and `#[cfg(debug_assertions)]` in `session.rs` is where that is
-# enforced: the hand test needs to hear what was captured, and a release build writes no
-# audio to disk at all. `dile-capture`'s example already uses this crate.
+# The probe clip (WP3) is a WAV in `assets/`, and the debug build writes `last.wav` beside
+# the application's data so the WP2 hand test has something to listen to. The clip is read
+# in every build; the writing is behind `#[cfg(debug_assertions)]` in `session.rs`.
 hound = "3.5.1"
+
+# The model downloader. `rustls` rather than the system stack because the one host this
+# product ever reaches is `huggingface.co` over HTTPS and a pure-Rust TLS stack needs no
+# OpenSSL on the platforms WP7 has to cross-build for. Default features are off: JSON,
+# gzip, cookies, charset conversion and SOCKS are all things a `GET` of a 574 MB file with
+# a `Range` header does not need.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+
+# The checksum every downloaded model is verified against before it is renamed into place
+# (`docs/PROJECT.md` §3, Distribution: "sha256 embedded in the app").
+sha2 = "0.10.9"
+
+# Error types with their message on the variant. Already in the tree through `dile-engine-
+# proto`, and the alternative is four hand-written `Display` implementations.
+thiserror = "2"
+
+# The first-run consent dialog. No model byte is fetched before a person has said yes, and
+# a native dialog is the only surface this application has to ask on until WP5 builds the
+# settings window.
+tauri-plugin-dialog = "2"
 
 # `tray-icon` is what turns the tray on in Tauri v2 and `image-png` lets the tray take a
 # PNG. Both are Tauri's own features, not extra crates.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 
-# `dile-engine` is deliberately NOT a dependency. WP3 puts the engine in a process of its
-# own so that a Vulkan driver crash takes the engine down and not the tray (docs/PROJECT.md
-# §3, GPU policy); linking it into the tray now would be the architecture WP3 has to undo.
+# `dile-engine` is deliberately NOT a dependency, and `dile-engine-proto` is the reason it
+# does not have to be. The engine runs in `dile-engine-host`, a process of its own, so that
+# a Vulkan driver fault takes the engine down and not the tray (docs/PROJECT.md §3); this
+# crate links the wire and never the runtime.

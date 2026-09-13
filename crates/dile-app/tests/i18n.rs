@@ -12,8 +12,10 @@
 //!   offered. That is why the status table lives in `locales/README.md`.
 //! * **The same holes.** A translation's placeholders are English's placeholders, or the
 //!   panel renders `{hotkey}` at somebody.
-//! * **No hard-coded text.** The last two tests read `crates/dile-app/src` and `ui/index.html`
-//!   and fail on prose that never passed through a catalogue.
+//! * **No hard-coded text.** The last two tests read every `.rs` file under
+//!   `crates/dile-app/src` — the whole tree rather than just its top level, because WP3 put
+//!   the engine in a subdirectory and a rule with a directory-shaped hole in it is not a
+//!   rule — and `ui/index.html`, and fail on prose that never passed through a catalogue.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -182,12 +184,14 @@ fn the_keys_that_carry_a_count_are_frozen_so_a_new_one_is_a_decision() {
 //     assertion message is written for whoever reads the failure, and that reader is a
 //     developer.
 //   * **Diagnostics.** The literal argument of `eprintln!`, `println!`, `panic!`,
-//     `unreachable!`, `todo!`, `write!`, `writeln!`, `.expect(…)` and the `log` macros.
-//     These reach a terminal, a log file or a crash report, never the tray — and Dile's
-//     command-line surface stays English on purpose, the way `dile transcribe --json` will
-//     in WP7. The `log` macros joined the list in WP2, when the session began reporting what
-//     it had captured; they are diagnostics by the same rule as `println!`, and the tray
-//     tooltips of that same package went into `locales/` like every other visible word.
+//     `unreachable!`, `todo!`, `write!`, `writeln!`, `.expect(…)`, the `log` macros and
+//     `thiserror`'s `#[error("…")]`. These reach a terminal, a log file or a crash report,
+//     never the tray — and Dile's command-line surface stays English on purpose, the way
+//     `dile transcribe --json` will in WP7. The `log` macros joined the list in WP2, when the
+//     session began reporting what it had captured, and `#[error]` in WP3, when the engine
+//     gained error types: an error message is a diagnostic by exactly the same rule as a
+//     `println!`, and the tray tooltips of both packages went into `locales/` like every
+//     other visible word.
 
 /// Comments out, string literals intact.
 fn strip_comments(source: &str) -> String {
@@ -289,6 +293,10 @@ fn is_diagnostic(before: &str) -> bool {
         "info!(",
         "debug!(",
         "trace!(",
+        // `thiserror`'s message attribute. An error's text goes to a log or a bug report,
+        // and the sentence a user reads about the same failure is a tray tooltip that comes
+        // out of `locales/` like every other visible word.
+        "#[error(",
     ]
     .iter()
     .any(|macro_head| head.ends_with(macro_head))
@@ -314,17 +322,19 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
         // The tray tooltip's placeholder value, not a sentence: WP2 owns the hotkey and its
         // display form; the tooltip around it comes from the catalogue.
         "Ctrl+Alt+Space",
+        // WP3's probe clip says this, and `engine/probe.rs` holds it so that a failed probe
+        // can log both sides of the comparison. It is the content of an audio file, not a
+        // string anybody is shown: translating it would mean the expected words no longer
+        // matched the committed WAV, which is the one thing that must never drift.
+        "Bugün hava çok güzel ve deniz sakin.",
     ]
     .into();
 
     let src = repo().join("crates/dile-app/src");
+    let sources = rust_files(&src);
     let mut checked = 0;
-    for entry in fs::read_dir(&src).expect("read src/") {
-        let path = entry.expect("a source file").path();
-        if path.extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
-        let source = fs::read_to_string(&path).expect("read a source file");
+    for path in &sources {
+        let source = fs::read_to_string(path).expect("read a source file");
         // The unit tests live at the end of the file, after `#[cfg(test)]`.
         let code = source.split("#[cfg(test)]").next().unwrap_or_default();
         checked += 1;
@@ -339,7 +349,33 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
             );
         }
     }
-    assert!(checked >= 2, "the scan found only {checked} source files");
+    assert!(checked >= 8, "the scan found only {checked} source files");
+    assert!(
+        sources
+            .iter()
+            .any(|path| path.components().any(|part| part.as_os_str() == "engine")),
+        "the scan never reached src/engine/, so a subdirectory could hide a sentence"
+    );
+}
+
+/// Every `.rs` file under `directory`, including the ones in subdirectories.
+///
+/// Sorted, so a failure names the same file on every machine.
+fn rust_files(directory: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 #[test]

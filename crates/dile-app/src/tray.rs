@@ -57,17 +57,23 @@ const ICON_WORKING: &[u8] = include_bytes!("../icons/tray-working.png");
 
 /// What the tray is saying about the session.
 ///
-/// Three of these are the states of a dictation; two are answers to a question the user is
-/// about to ask — *did it hear me?* and *is there a microphone at all?* Both of those keep
-/// the idle icon, because a colour with no dictation behind it reads as activity.
+/// Three of these are the states of a dictation and the rest are answers to a question the
+/// user is about to ask — *did it hear me?*, *is there a microphone at all?*, *why is this
+/// taking so long?*, *why does nothing come out?* Everything that is not an active dictation
+/// keeps the idle icon, because a colour with no dictation behind it reads as activity.
+///
+/// **Five of these arrived with WP3**, because the engine can be in a state the session has
+/// no words for: no weights, weights arriving, a tier that lost its probe, a process that
+/// will not stay up. `docs/PROJECT.md` §6 WP3 asks for exactly that — a machine on the
+/// fallback tier "says so" — and the tray is where it says it until WP5 builds somewhere
+/// better.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     /// Nothing is happening, and the hotkey is armed.
     Idle,
     /// The key is down and audio is being captured.
     Recording,
-    /// The key is up and the recording is on its way. WP3 is what makes this last longer
-    /// than a blink.
+    /// The key is up and the recording is being transcribed.
     Working,
     /// The recording held no speech, so nothing was sent anywhere.
     ///
@@ -77,6 +83,19 @@ pub enum Status {
     NothingHeard,
     /// The microphone could not be opened. The application keeps running.
     NoMicrophone,
+    /// The engine is being brought up: the first-run probe, a model load, a respawn.
+    Preparing,
+    /// Model weights are arriving, with how far along they are.
+    Downloading(u8),
+    /// There are no weights on this machine, because the download was declined.
+    ///
+    /// The hotkey still records; it simply has nowhere to send what it captured, and the log
+    /// says so on every press rather than the application pretending to work.
+    NoModel,
+    /// Running on the CPU fallback tier, because the first-run GPU probe did not pass.
+    CpuTier,
+    /// The engine process went down too many times in a row and is not being restarted.
+    EngineFailed,
 }
 
 impl Status {
@@ -92,6 +111,11 @@ impl Status {
             Status::Working => "working",
             Status::NothingHeard => "nothing-heard",
             Status::NoMicrophone => "no-microphone",
+            Status::Preparing => "preparing",
+            Status::Downloading(_) => "downloading",
+            Status::NoModel => "no-model",
+            Status::CpuTier => "cpu-tier",
+            Status::EngineFailed => "engine-failed",
         }
     }
 
@@ -103,23 +127,43 @@ impl Status {
             Status::Working => "tray.tooltip.working",
             Status::NothingHeard => "tray.tooltip.nothing",
             Status::NoMicrophone => "tray.tooltip.nomicrophone",
+            Status::Preparing => "tray.tooltip.preparing",
+            Status::Downloading(_) => "tray.tooltip.downloading",
+            Status::NoModel => "tray.tooltip.nomodel",
+            Status::CpuTier => "tray.tooltip.cputier",
+            Status::EngineFailed => "tray.tooltip.enginefailed",
         }
     }
 
     /// The PNG this state paints on the tray.
     const fn icon_bytes(self) -> &'static [u8] {
         match self {
-            Status::Idle | Status::NothingHeard | Status::NoMicrophone => ICON_IDLE,
+            Status::Idle
+            | Status::NothingHeard
+            | Status::NoMicrophone
+            | Status::NoModel
+            | Status::CpuTier
+            | Status::EngineFailed => ICON_IDLE,
             Status::Recording => ICON_RECORDING,
-            Status::Working => ICON_WORKING,
+            // The engine doing something the user is waiting for is the same amber as a
+            // dictation being transcribed, because from the tray they are the same thing:
+            // the application is busy and the answer is not here yet.
+            Status::Working | Status::Preparing | Status::Downloading(_) => ICON_WORKING,
         }
     }
 
     /// This state's tooltip, in the user's language.
     fn tooltip(self, strings: &Strings) -> String {
-        // Every tooltip is offered the hotkey; only the idle one has a hole for it, and
-        // `interpolate` leaves the rest alone.
-        strings.format(self.tooltip_key(), &[("hotkey", DEFAULT_HOTKEY)])
+        // Every tooltip is offered both holes; `interpolate` leaves alone the ones a given
+        // string does not have, so there is no per-state parameter list to keep in step.
+        let percent = match self {
+            Status::Downloading(percent) => percent.to_string(),
+            _ => String::new(),
+        };
+        strings.format(
+            self.tooltip_key(),
+            &[("hotkey", DEFAULT_HOTKEY), ("percent", percent.as_str())],
+        )
     }
 }
 
@@ -195,12 +239,17 @@ mod tests {
     use super::{ICON_IDLE, ICON_RECORDING, ICON_WORKING, Status};
     use crate::i18n::Strings;
 
-    const EVERY_STATUS: [Status; 5] = [
+    const EVERY_STATUS: [Status; 10] = [
         Status::Idle,
         Status::Recording,
         Status::Working,
         Status::NothingHeard,
         Status::NoMicrophone,
+        Status::Preparing,
+        Status::Downloading(42),
+        Status::NoModel,
+        Status::CpuTier,
+        Status::EngineFailed,
     ];
 
     #[test]
@@ -234,6 +283,20 @@ mod tests {
         assert_ne!(ICON_IDLE, ICON_RECORDING);
         assert_ne!(ICON_RECORDING, ICON_WORKING);
         assert_ne!(ICON_IDLE, ICON_WORKING);
+    }
+
+    #[test]
+    fn the_download_tooltip_carries_the_number_and_the_others_do_not_go_looking_for_one() {
+        for language in ["en", "tr"] {
+            let strings = Strings::for_locale(language);
+            let tooltip = Status::Downloading(42).tooltip(&strings);
+            assert!(
+                tooltip.contains("42"),
+                "{language}: the download tooltip lost its percentage: {tooltip}"
+            );
+            // Nothing else has a hole for it, so nothing else may end up with a stray number.
+            assert!(!Status::Idle.tooltip(&strings).contains("42"));
+        }
     }
 
     #[test]

@@ -36,3 +36,9 @@ models/
 *.onnx
 *.wav
 *.mp4
+
+# One exception, and it is not a recording: WP3's probe clip is two seconds of Windows' own
+# Turkish text-to-speech voice reading a neutral sentence. 64 KB, compiled into the binary,
+# because the first-run GPU probe has to be the same audio on every machine. The command
+# that regenerates it is in docs/BUILDING.md.
+!crates/dile-app/assets/probe.wav

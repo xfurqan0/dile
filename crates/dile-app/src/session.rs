@@ -1,13 +1,13 @@
-//! Where the hotkey meets the microphone: WP2's two halves, wired together.
+//! Where the hotkey meets the microphone, and where a recording leaves for the engine.
 //!
-//! `dile-hotkey` turns key events into four verbs and `dile-capture` turns a microphone into
-//! a buffer. Neither knows the other exists — that was the point of building them apart —
-//! and this module is the seam. It is also, deliberately, the only place in the application
-//! that knows what a dictation *is*.
+//! `dile-hotkey` turns key events into four verbs, `dile-capture` turns a microphone into a
+//! buffer, and `crate::engine` turns a buffer into text. None of the three knows the others
+//! exist — that was the point of building them apart — and this module is the seam. It is
+//! also, deliberately, the only place in the application that knows what a dictation *is*.
 //!
 //! ```text
-//!   HotkeyListener ──Action──▶ session thread ──▶ Capture ──Recording──▶ handoff (WP3)
-//!                                    │                │
+//!   HotkeyListener ──Action──▶ session thread ──▶ Capture ──Recording──▶ EngineClient
+//!                                    │                │                       │
 //!                                    │                └──LevelEvent──▶ level thread
 //!                                    ▼                                      │
 //!                              tray::Status ───────────────────────▶ dile://state
@@ -16,13 +16,14 @@
 //!
 //! **Two threads, and neither of them is the UI thread.** The session thread blocks on the
 //! hotkey's action channel and owns the [`Capture`]; the level thread blocks on the capture's
-//! level channel and forwards readings to the panel window. Both talk to the tray through
-//! [`crate::tray::show`], which Tauri dispatches to the main thread for them.
+//! level channel and forwards readings to the panel window. Both talk to the application
+//! through [`Ui`], which dispatches to the main thread for them.
 //!
-//! **Where a dictation stops, for now.** [`handoff`] is the seam WP3 replaces: today it
-//! writes a line about what was captured, and in debug builds it writes the audio next to it
-//! so the maintainer can listen to what the pre-roll caught. WP3 sends the same buffer to the
-//! engine process instead, and nothing else here changes.
+//! **The handoff does not wait.** [`handoff`] puts the buffer in the engine's queue and
+//! returns, so the next key press is heard even while the last sentence is still being
+//! transcribed. What happens to it after that — the tray's working state, the cleanup, the
+//! text — belongs to `crate::engine`, which owns the one thread that talks to the engine
+//! process.
 //!
 //! **Silence never reaches an engine.** M0 found every canned hallucination in the robustness
 //! set sitting on the same ten seconds of applause (`docs/PROJECT.md`, log 2026-09-09), so a
@@ -38,19 +39,12 @@ use std::time::Instant;
 use dile_capture::{Capture, LevelReceiver, Recording};
 use dile_hotkey::{Action, HotkeyListener};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, EventTarget, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::config::AppConfig;
-use crate::i18n::Strings;
-use crate::tray::{self, Status};
-
-/// The window the review panel lives in. Declared in `tauri.conf.json`, hidden until WP5.
-const PANEL_WINDOW: &str = "panel";
-
-/// One meter reading, on its way to the panel's level bar.
-const EVENT_LEVEL: &str = "dile://level";
-/// One state change, on its way to the panel.
-const EVENT_STATE: &str = "dile://state";
+use crate::engine::EngineClient;
+use crate::tray::Status;
+use crate::ui::{EVENT_LEVEL, Ui};
 
 /// The payload of [`EVENT_LEVEL`].
 ///
@@ -67,13 +61,6 @@ struct LevelPayload {
     elapsed_ms: u64,
     /// The recording cap in force, in milliseconds.
     cap_ms: u64,
-}
-
-/// The payload of [`EVENT_STATE`].
-#[derive(Clone, Debug, Serialize)]
-struct StatePayload {
-    /// One of `tray::Status::event_state`.
-    state: &'static str,
 }
 
 /// How long a recording has been running, shared between the two threads without a lock.
@@ -118,59 +105,6 @@ impl Elapsed {
     }
 }
 
-/// Everything the session threads need to reach the application with.
-#[derive(Clone)]
-struct Ui {
-    app: AppHandle,
-    strings: Arc<Strings>,
-    /// Whether the panel window exists. Checked once, because the answer cannot change until
-    /// WP5 creates windows at run time — and a `get_webview_window` per level event would be
-    /// a hash lookup twenty times a second for an answer that is always the same.
-    panel: bool,
-}
-
-impl Ui {
-    fn new(app: AppHandle, strings: Arc<Strings>) -> Self {
-        let panel = app.get_webview_window(PANEL_WINDOW).is_some();
-        if !panel {
-            // Not fatal, and not even unusual until WP5: the window is declared in
-            // `tauri.conf.json`, so this is a configuration change nobody meant to make.
-            log::warn!("no {PANEL_WINDOW} window; level and state events go nowhere");
-        }
-        Ui {
-            app,
-            strings,
-            panel,
-        }
-    }
-
-    /// Show a state on the tray and tell the panel about it.
-    fn show(&self, status: Status) {
-        tray::show(&self.app, &self.strings, status);
-        self.emit(
-            EVENT_STATE,
-            StatePayload {
-                state: status.event_state(),
-            },
-        );
-    }
-
-    /// Send one event to the panel window, or to nowhere if there is no panel.
-    fn emit<P: Serialize + Clone>(&self, event: &str, payload: P) {
-        if !self.panel {
-            return;
-        }
-        if let Err(error) =
-            self.app
-                .emit_to(EventTarget::webview_window(PANEL_WINDOW), event, payload)
-        {
-            // At twenty a second this could fill a log on its own, so it is a debug line:
-            // the panel is not listening yet, and a failure here costs one frame of a meter.
-            log::debug!("{event} was not delivered: {error}");
-        }
-    }
-}
-
 /// Install the hotkey and start the session.
 ///
 /// # Errors
@@ -181,9 +115,9 @@ impl Ui {
 /// **not** an error here — it is reported on the tray and retried at the next press, because
 /// a device can be plugged in a minute later.
 pub fn start(
-    app: &AppHandle,
-    strings: Arc<Strings>,
+    ui: Ui,
     config: AppConfig,
+    engine: EngineClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = HotkeyListener::spawn(config.hotkey)?;
     log::info!(
@@ -192,16 +126,15 @@ pub fn start(
         config.hotkey.second_key.is_some()
     );
 
-    let ui = Ui::new(app.clone(), strings);
     thread::Builder::new()
         .name("dile-session".to_owned())
-        .spawn(move || run(&ui, &config, listener))?;
+        .spawn(move || run(&ui, &config, &engine, listener))?;
 
     Ok(())
 }
 
 /// The session thread: one action at a time, in the order the user produced them.
-fn run(ui: &Ui, config: &AppConfig, listener: HotkeyListener) {
+fn run(ui: &Ui, config: &AppConfig, engine: &EngineClient, listener: HotkeyListener) {
     let elapsed = Elapsed::new();
     let mut capture = open_capture(ui, config, &elapsed);
 
@@ -242,9 +175,9 @@ fn run(ui: &Ui, config: &AppConfig, listener: HotkeyListener) {
                     // error, and nothing is owed to anybody.
                     Ok(recording) if recording.is_empty() => {
                         log::debug!("a release arrived with nothing recorded behind it");
-                        ui.show(Status::Idle);
+                        ui.rest();
                     }
-                    Ok(recording) => finish(ui, open.overruns(), &recording),
+                    Ok(recording) => finish(ui, engine, open.overruns(), &recording),
                     Err(error) => {
                         log::error!("the recording could not be taken: {error}");
                         capture = None;
@@ -261,7 +194,7 @@ fn run(ui: &Ui, config: &AppConfig, listener: HotkeyListener) {
                     log::error!("the recording could not be discarded: {error}");
                     capture = None;
                 }
-                ui.show(Status::Idle);
+                ui.rest();
             }
 
             // TODO(WP5): show the panel, empty, so a tap proves the hotkey works without
@@ -289,7 +222,7 @@ fn open_capture(ui: &Ui, config: &AppConfig, elapsed: &Elapsed) -> Option<Captur
                 elapsed.clone(),
                 config.cap_ms(),
             );
-            ui.show(Status::Idle);
+            ui.rest();
             Some(capture)
         }
         Err(error) => {
@@ -329,7 +262,7 @@ fn spawn_level_thread(ui: Ui, levels: LevelReceiver, elapsed: Elapsed, cap_ms: u
 }
 
 /// A finished recording: report it, drop it if it is silence, hand it on if it is not.
-fn finish(ui: &Ui, overruns: u64, recording: &Recording) {
+fn finish(ui: &Ui, engine: &EngineClient, overruns: u64, recording: &Recording) {
     if overruns > 0 {
         // The ring filled, so the machine could not keep up. The count is cumulative since
         // the microphone was opened, which is why this says "a recording" rather than "this
@@ -342,8 +275,7 @@ fn finish(ui: &Ui, overruns: u64, recording: &Recording) {
 
     if recording.speech.has_speech {
         ui.show(Status::Working);
-        handoff(&ui.app, recording);
-        ui.show(Status::Idle);
+        handoff(ui.app(), engine, recording);
     } else {
         log::info!(
             "nothing heard in {:.2} s ({} samples); the recording was dropped",
@@ -354,13 +286,14 @@ fn finish(ui: &Ui, overruns: u64, recording: &Recording) {
     }
 }
 
-/// Where a dictation leaves WP2.
+/// Hand the buffer to the engine and go back to listening for the next key press.
 ///
-/// **WP3 replaces the body of this function** with a send to the isolated engine process, and
-/// the tray's working state — which is a blink today — becomes the transcription. Everything
-/// before it is finished: the buffer is 16 kHz mono `f32` with the pre-roll already in front
-/// of it, which is exactly what `dile_engine::Engine::transcribe` takes.
-fn handoff(app: &AppHandle, recording: &Recording) {
+/// **This does not block and does not wait for text.** The engine's supervisor owns the
+/// transcription, the tray's working state and the cleaned result; what leaves here is 16 kHz
+/// mono `f32` with the pre-roll already in front of it, which is exactly what
+/// `dile-engine-proto` puts on the wire. A copy is made because the recording belongs to the
+/// capture crate and the engine will still be holding it after this function returns.
+fn handoff(app: &AppHandle, engine: &EngineClient, recording: &Recording) {
     log::info!(
         "recording: {:.2} s, {} samples, speech {} ms from {:.2} s to {:.2} s",
         recording.duration.as_secs_f32(),
@@ -382,6 +315,8 @@ fn handoff(app: &AppHandle, recording: &Recording) {
     save_last_recording(app, recording);
     #[cfg(not(debug_assertions))]
     let _ = app;
+
+    engine.submit(recording.samples.clone());
 }
 
 /// Write the recording to `last.wav` in the application's local data directory.
@@ -437,8 +372,7 @@ fn save_last_recording(app: &AppHandle, recording: &Recording) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Elapsed, LevelPayload, StatePayload};
-    use crate::tray::Status;
+    use super::{Elapsed, LevelPayload};
     use std::thread::sleep;
     use std::time::Duration;
 
@@ -467,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_payloads_are_the_shape_wp5_will_read() {
+    fn the_level_payload_is_the_shape_wp5_will_read() {
         let level = serde_json::to_value(LevelPayload {
             rms_dbfs: -42.5,
             peak_dbfs: -30.0,
@@ -479,11 +413,5 @@ mod tests {
         assert_eq!(level["peak_dbfs"], -30.0);
         assert_eq!(level["elapsed_ms"], 1_200);
         assert_eq!(level["cap_ms"], 60_000);
-
-        let state = serde_json::to_value(StatePayload {
-            state: Status::Recording.event_state(),
-        })
-        .expect("a state payload serializes");
-        assert_eq!(state["state"], "recording");
     }
 }
