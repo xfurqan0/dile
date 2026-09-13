@@ -50,7 +50,7 @@
   "settings.cleanup.autotransfer.unit": "ms",
   "settings.cleanup.autotransfer.hint": "Panel sonucu bu süre sonunda kendiliğinden aktarır. ✗ tuşuna basmak ya da metni düzenlemek bunu durdurur.",
   "settings.engine.tier": "Katman",
-  "settings.engine.tier.auto": "Otomatik (denemenin bulduğu)",
+  "settings.engine.tier.auto": "Otomatik (deneme)",
   "settings.engine.tier.vulkan": "Vulkan (GPU)",
   "settings.engine.tier.cpu": "CPU",
   "settings.engine.probe.rerun": "GPU denemesini yenile",

@@ -166,6 +166,13 @@ body {
   line-height: 1.45;
 }
 
+/* A hint under a group that has no label column — the dictionary's empty state — starts at
+   the left edge of the pane instead of under a label that is not there. */
+.hint.flush {
+  margin-left: 0;
+  max-width: 460px;
+}
+
 .note {
   font-size: 11.5px;
   color: var(--p-dim-2);

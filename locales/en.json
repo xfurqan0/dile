@@ -50,7 +50,7 @@
   "settings.cleanup.autotransfer.unit": "ms",
   "settings.cleanup.autotransfer.hint": "The panel transfers the result by itself after this long. Pressing ✗ or editing the text stops it.",
   "settings.engine.tier": "Tier",
-  "settings.engine.tier.auto": "Automatic (what the probe found)",
+  "settings.engine.tier.auto": "Automatic (probe)",
   "settings.engine.tier.vulkan": "Vulkan (GPU)",
   "settings.engine.tier.cpu": "CPU",
   "settings.engine.probe.rerun": "Re-run the GPU probe",

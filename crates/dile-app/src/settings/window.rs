@@ -38,6 +38,20 @@ const HEIGHT: f64 = 520.0;
 /// rather than propagated: a settings window that will not open is not a reason to take a
 /// running dictation application down.
 pub fn open(app: &AppHandle) {
+    open_at(app, None);
+}
+
+/// Show the settings window with one group already selected.
+///
+/// `group` is one of the `data-section` names the markup carries. It reaches the page as a
+/// global the script reads once at start-up, because a fragment in the asset URL is a path
+/// component as far as the webview protocol is concerned.
+///
+/// **Only the debug switch passes anything but `None` today** (`DILE_OPEN_SETTINGS=engine`),
+/// and it exists because no script can click a tray menu, let alone the fourth item of a
+/// rail inside a webview — so "does the dictionary table still lay out" is otherwise a
+/// question nobody can answer from a terminal.
+pub fn open_at(app: &AppHandle, group: Option<&str>) {
     if let Some(window) = app.get_webview_window(WINDOW) {
         // Already built, and probably hidden. `set_focus` on a window that is behind another
         // application is what makes a second click on the tray menu feel like it did
@@ -57,7 +71,7 @@ pub fn open(app: &AppHandle) {
         None => String::new(),
     };
 
-    let built = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App(PAGE.into()))
+    let mut builder = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App(PAGE.into()))
         .title(title)
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
@@ -65,8 +79,16 @@ pub fn open(app: &AppHandle) {
         .minimizable(true)
         .decorations(true)
         .center()
-        .visible(true)
-        .build();
+        .visible(true);
+
+    if let Some(group) = group.filter(|group| group.chars().all(|c| c.is_ascii_alphabetic())) {
+        // Alphabetic only, and then quoted: this string comes from the environment in a debug
+        // build, and a value that could carry a quote would be a script injected into a
+        // window whose whole point is that nothing can inject one.
+        builder = builder.initialization_script(format!("window.__DILE_GROUP__=\"{group}\";"));
+    }
+
+    let built = builder.build();
 
     match built {
         Ok(window) => {

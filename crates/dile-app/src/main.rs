@@ -185,9 +185,13 @@ fn main() {
             // or a hand check that the window still lays out after a change. A release build
             // does not contain the code that reads it.
             #[cfg(debug_assertions)]
-            if std::env::var("DILE_OPEN_SETTINGS").is_ok_and(|value| value == "1") {
+            if let Ok(group) = std::env::var("DILE_OPEN_SETTINGS")
+                && !group.trim().is_empty()
+            {
                 log::warn!("DILE_OPEN_SETTINGS is set: opening the settings window at start");
-                settings::window::open(app.handle());
+                // `1` means the window; anything else names the group to open it on.
+                let group = (group != "1").then_some(group);
+                settings::window::open_at(app.handle(), group.as_deref());
             }
 
             Ok(())

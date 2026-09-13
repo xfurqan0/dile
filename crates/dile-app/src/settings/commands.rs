@@ -149,13 +149,31 @@ pub fn set_settings(
 
 /// The microphones this machine has.
 ///
+/// **`async`, and the reason is COM.** A synchronous Tauri command runs on the main thread,
+/// and that thread has already been put into a single-threaded apartment by the webview.
+/// `cpal` asks for a multi-threaded one, gets `RPC_E_CHANGED_MODE`, and enumerates nothing —
+/// which is exactly what this window showed the first time it was run: one microphone list
+/// with no microphones in it on a machine with a working headset. Off the main thread it is
+/// the same call the capture stage makes at every start-up.
+///
 /// # Errors
 ///
 /// The audio host would not enumerate its devices.
 #[tauri::command]
-pub fn list_input_devices() -> Result<Vec<DeviceRow>, CommandError> {
-    let devices = dile_capture::Capture::devices()
+pub async fn list_input_devices() -> Result<Vec<DeviceRow>, CommandError> {
+    let listed = tauri::async_runtime::spawn_blocking(dile_capture::Capture::devices)
+        .await
         .map_err(|error| CommandError::detailed("settings.error.devices", &error))?;
+
+    let devices = listed.map_err(|error| {
+        log::warn!("the input devices could not be listed: {error}");
+        CommandError::detailed("settings.error.devices", &error)
+    })?;
+
+    log::info!(
+        "the settings window listed {} input device(s)",
+        devices.len()
+    );
     Ok(devices
         .into_iter()
         .map(|device| DeviceRow {

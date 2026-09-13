@@ -509,7 +509,12 @@ async function boot() {
 
     draw();
     wire();
-    showSection("hotkey");
+
+    // The group to open on. The Rust side sets it only when something asked for one; every
+    // other start lands on the first rail item.
+    const wanted = window.__DILE_GROUP__;
+    const known = $$(".rail-item").some((item) => item.dataset.section === wanted);
+    showSection(known ? wanted : "hotkey");
   } catch (error) {
     console.error(error);
   }
