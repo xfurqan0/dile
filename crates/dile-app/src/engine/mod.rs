@@ -41,11 +41,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dile_core::cleanup::{self, Strictness};
+use dile_core::cleanup::{self, Config as CleanupConfig};
 use dile_engine_proto::Device;
+use serde::Serialize;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-use crate::config::AppConfig;
+use crate::settings::SettingsStore;
 use crate::tray::Status;
 use crate::ui::{EVENT_ENGINE, Ui};
 use host::{HostError, HostProcess};
@@ -63,13 +64,31 @@ const MAX_RESTARTS: u32 = 3;
 /// The wait before the *n*th respawn: this, multiplied by *n*.
 const BACKOFF: Duration = Duration::from_millis(400);
 
+/// What the engine is doing, as the settings window reads it.
+///
+/// A snapshot rather than a question asked of the supervisor: that thread spends minutes at
+/// a time inside a download or a cold Vulkan load, and a settings window that had to wait
+/// for it would be a settings window that hangs while a model arrives.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EngineSnapshot {
+    /// One of [`EngineState::name`], or empty before the first report.
+    pub state: &'static str,
+    /// The tier the engine is loaded on, when it is loaded.
+    pub tier: Option<&'static str>,
+    /// The model file this machine is set up to use.
+    pub model: Option<String>,
+    /// Download progress, 0–100, while something is being downloaded.
+    pub progress: Option<u8>,
+}
+
 /// The queue and the handle the session holds on the engine.
 ///
 /// Cheap to clone and safe from any thread. Everything it can do is put one dictation in
-/// front of the supervisor, or tell it to stop.
+/// front of the supervisor, tell it the tier moved, or tell it to stop.
 #[derive(Clone)]
 pub struct EngineClient {
     queue: Arc<Queue>,
+    status: Arc<Mutex<EngineSnapshot>>,
 }
 
 impl EngineClient {
@@ -79,9 +98,10 @@ impl EngineClient {
     /// client, because the alternative is an application that refuses to start over
     /// something the user can fix later.
     #[must_use]
-    pub fn start(ui: Ui, config: &AppConfig) -> Self {
+    pub fn start(ui: Ui, store: SettingsStore) -> Self {
         let queue = Arc::new(Queue::default());
-        let supervisor = Supervisor::new(ui, config, Arc::clone(&queue));
+        let status = Arc::new(Mutex::new(EngineSnapshot::default()));
+        let supervisor = Supervisor::new(ui, store, Arc::clone(&queue), Arc::clone(&status));
 
         let spawned = thread::Builder::new()
             .name("dile-engine".to_owned())
@@ -90,7 +110,29 @@ impl EngineClient {
             log::error!("the engine supervisor could not be started: {error}");
         }
 
-        EngineClient { queue }
+        EngineClient { queue, status }
+    }
+
+    /// What the engine is doing, for the settings window.
+    #[must_use]
+    pub fn status(&self) -> EngineSnapshot {
+        match self.status.lock() {
+            Ok(status) => status.clone(),
+            Err(_) => EngineSnapshot::default(),
+        }
+    }
+
+    /// The tier the user asked for has changed; restart the engine on it.
+    ///
+    /// Returns immediately, like everything else here: the restart happens on the
+    /// supervisor's thread, between dictations.
+    pub fn retier(&self) {
+        self.queue.retier();
+    }
+
+    /// Forget what this machine decided and run the first-run probe again.
+    pub fn reprobe(&self) {
+        self.queue.reprobe();
     }
 
     /// Hand one recording to the engine.
@@ -118,6 +160,10 @@ enum Wake {
     Job(Vec<f32>),
     /// The engine process of this generation has ended.
     HostDown(u64),
+    /// The tier the settings ask for has changed; bring the engine up again on it.
+    Retier,
+    /// Throw the tier decision away and probe this machine again.
+    Reprobe,
     /// The application is shutting down.
     Stop,
 }
@@ -135,6 +181,10 @@ struct Pending {
     job: Option<Vec<f32>>,
     /// The generation of an engine process that has ended and not been dealt with.
     down: Option<u64>,
+    /// The settings moved the tier and the engine has not been put back on it yet.
+    retier: bool,
+    /// The settings window asked for the probe to run again.
+    reprobe: bool,
     stop: bool,
 }
 
@@ -158,6 +208,22 @@ impl Queue {
     fn host_down(&self, generation: u64) {
         if let Ok(mut pending) = self.inner.lock() {
             pending.down = Some(pending.down.map_or(generation, |seen| seen.max(generation)));
+            self.wake.notify_all();
+        }
+    }
+
+    /// Say that the tier the settings ask for has changed.
+    fn retier(&self) {
+        if let Ok(mut pending) = self.inner.lock() {
+            pending.retier = true;
+            self.wake.notify_all();
+        }
+    }
+
+    /// Say that the machine should be probed again.
+    fn reprobe(&self) {
+        if let Ok(mut pending) = self.inner.lock() {
+            pending.reprobe = true;
             self.wake.notify_all();
         }
     }
@@ -191,6 +257,12 @@ impl Queue {
             if let Some(generation) = pending.down.take() {
                 return Wake::HostDown(generation);
             }
+            if std::mem::take(&mut pending.reprobe) {
+                return Wake::Reprobe;
+            }
+            if std::mem::take(&mut pending.retier) {
+                return Wake::Retier;
+            }
             if let Some(job) = pending.job.take() {
                 return Wake::Job(job);
             }
@@ -222,16 +294,21 @@ impl Halt {
 struct Supervisor {
     ui: Ui,
     queue: Arc<Queue>,
-    /// The language every request names. `docs/PROJECT.md` §3: Dile knows what it is set to,
-    /// so the engine is never left to autodetect.
-    language: String,
-    /// Which cleanup level the transcript is passed through.
-    strictness: Strictness,
+    /// The settings, read fresh at every dictation.
+    ///
+    /// WP5's requirement is that a change applies without a restart, and the three settings
+    /// this thread owns — the cleanup level, the dictionary and the tier — are read at the
+    /// moment they are used rather than copied here at start-up. A dictionary typed while a
+    /// transcription is in flight is therefore in the prompt of the next one.
+    store: SettingsStore,
+    /// What the settings window is told when it asks.
+    status: Arc<Mutex<EngineSnapshot>>,
     /// CPU threads for the engine; 0 leaves it to the runtime.
+    ///
+    /// Zero is right on the Vulkan tier, where almost nothing runs on the CPU, and it is
+    /// right on the fallback tier too until somebody has measured otherwise. Not a setting:
+    /// a number nobody can measure the effect of is not a question to put on a form.
     threads: u32,
-    /// The dictionary as an initial prompt, or empty. **Empty in every build today**: the
-    /// shipped dictionary has no entries and WP5 is what gives it somewhere to be stored.
-    prompt: String,
     /// The tier this machine decided on.
     tier: Option<Device>,
     /// The model file the tier runs.
@@ -248,14 +325,18 @@ struct Supervisor {
 }
 
 impl Supervisor {
-    fn new(ui: Ui, config: &AppConfig, queue: Arc<Queue>) -> Self {
+    fn new(
+        ui: Ui,
+        store: SettingsStore,
+        queue: Arc<Queue>,
+        status: Arc<Mutex<EngineSnapshot>>,
+    ) -> Self {
         Supervisor {
             ui,
             queue,
-            language: config.engine.language.clone(),
-            strictness: config.engine.strictness,
-            threads: config.engine.threads,
-            prompt: config.engine.dictionary.prompt().unwrap_or_default(),
+            store,
+            status,
+            threads: 0,
             tier: None,
             model_file: None,
             host: None,
@@ -278,6 +359,8 @@ impl Supervisor {
                         log::debug!("engine generation {generation} has ended, as expected");
                     }
                 }
+                Wake::Retier => self.retier(),
+                Wake::Reprobe => self.reprobe(),
                 Wake::Job(samples) => self.dictate(&samples),
             }
         }
@@ -319,6 +402,37 @@ impl Supervisor {
         let app = self.ui.app().clone();
         let model_dir = models::directory(&app).map_err(Halt::from_error)?;
         let tier_file = state::tier_path(&app).map_err(Halt::from_error)?;
+
+        // What the user said outranks what the probe found, and it is written into the same
+        // file so that the next start does not probe again. `docs/PROJECT.md` §3: "The tier
+        // stays visible and switchable in settings."
+        if let Some(wanted) = self.store.get().engine.tier_override {
+            let existing = state::read_tier(&tier_file);
+            if existing.as_ref().map(|record| record.tier) != Some(wanted) {
+                // The probe's own answer is kept beside the override, so the settings page
+                // can still say what this machine found when it was asked.
+                let record = TierRecord {
+                    tier: wanted,
+                    ..existing.unwrap_or_else(|| TierRecord::taken(wanted, ProbeResult::default()))
+                };
+                if let Err(error) = state::write_tier(&tier_file, &record) {
+                    log::warn!("the tier the settings asked for could not be saved: {error}");
+                }
+            }
+            log::info!(
+                "the settings ask for the {} tier, so this machine is not probed",
+                wanted.as_str()
+            );
+            self.tier = Some(wanted);
+            let spec = models::for_tier(wanted);
+            let path = self.ensure_model(&model_dir, spec)?;
+            self.model_file = Some(path.clone());
+            if self.loaded != Some(wanted) {
+                self.start_host().map_err(Halt::from_error)?;
+                self.load(&path, wanted).map_err(Halt::from_error)?;
+            }
+            return Ok(wanted);
+        }
 
         let tier = match state::read_tier(&tier_file) {
             Some(record) => {
@@ -430,7 +544,7 @@ impl Supervisor {
         let load_ms = millis(&started);
 
         let started = Instant::now();
-        let language = self.language.clone();
+        let language = crate::settings::DICTATION_LANGUAGE.to_owned();
         let response = {
             // No prompt, deliberately: the probe is about the device, and a dictionary in
             // front of it would be one more thing that could explain a wrong answer.
@@ -696,8 +810,13 @@ impl Supervisor {
         self.ui.show(Status::Working);
 
         let seconds = samples.len() as f32 / dile_engine_proto::SAMPLE_RATE as f32;
-        let language = self.language.clone();
-        let prompt = self.prompt.clone();
+        // Read now rather than at start-up: a term typed into the settings window while the
+        // last sentence was being transcribed belongs in this one's prompt.
+        let settings = self.store.get();
+        let dictionary = settings.dictionary();
+        let strictness = settings.strictness();
+        let language = crate::settings::DICTATION_LANGUAGE.to_owned();
+        let prompt = dictionary.prompt().unwrap_or_default();
         let outcome = match self.host.as_mut() {
             Some(host) => host.transcribe(samples, &language, &prompt),
             None => Err(HostError::Gone("transcribe")),
@@ -713,12 +832,18 @@ impl Supervisor {
                 #[cfg(debug_assertions)]
                 log::info!("raw: {raw}");
 
-                let cleaned = cleanup::clean(&raw, self.strictness);
+                // The dictionary reaches the cleanup as well as the decoder: the prompt
+                // stops most mis-hearings and `apply` repairs the ones that got through.
+                let cleanup_config = CleanupConfig {
+                    dictionary,
+                    ..CleanupConfig::default()
+                };
+                let cleaned = cleanup::clean_with(&raw, strictness, &cleanup_config).text;
                 log::info!(
                     "dictation: {seconds:.2} s of audio, {} ms on {}, {} — {cleaned}",
                     response.took_ms.unwrap_or_default(),
                     response.device.unwrap_or_default(),
-                    self.strictness.as_str(),
+                    strictness.as_str(),
                 );
                 self.restarts = 0;
                 self.deliver(&cleaned);
@@ -753,14 +878,66 @@ impl Supervisor {
         }
     }
 
+    // ------------------------------------------------------------------ the tier, again
+
+    /// The settings moved the tier. Put the engine on the one they now ask for.
+    ///
+    /// The process is dropped rather than reused: it is holding a gigabyte of the *other*
+    /// tier's weights, and asking one host to unload and reload across devices is a longer
+    /// path through the runtime than starting a new one.
+    fn retier(&mut self) {
+        let wanted = self.store.get().engine.tier_override;
+        if wanted.is_some() && wanted == self.tier {
+            return;
+        }
+        match wanted {
+            Some(tier) => log::info!("the settings ask for the {} tier", tier.as_str()),
+            None => log::info!("the settings hand the tier back to the probe"),
+        }
+        self.drop_host();
+        self.restarts = 0;
+        self.bring_up();
+    }
+
+    /// Throw this machine's tier decision away and ask the device again.
+    ///
+    /// `docs/PROJECT.md` §3 runs the probe once per machine, because a cold Vulkan load is
+    /// not something to pay for every morning. A driver update is the case where that answer
+    /// is stale, and this is the button for it.
+    fn reprobe(&mut self) {
+        let removed = state::tier_path(self.ui.app()).map(|path| std::fs::remove_file(&path));
+        match removed {
+            Ok(Ok(())) => log::info!("the tier decision was removed; this machine is probed again"),
+            Ok(Err(error)) => log::warn!("there was no tier decision to remove: {error}"),
+            Err(error) => {
+                log::error!("the tier decision could not be found: {error}");
+                return;
+            }
+        }
+        self.drop_host();
+        self.tier = None;
+        self.model_file = None;
+        self.restarts = 0;
+        self.bring_up();
+    }
+
     // ---------------------------------------------------------------------------- reports
 
-    /// Tell the panel what the engine is doing.
+    /// Tell the panel what the engine is doing, and leave it where the settings can read it.
     fn announce(&self, engine_state: EngineState) {
-        self.ui.emit(
-            EVENT_ENGINE,
-            EnginePayload::new(engine_state, self.model_name()),
-        );
+        let payload = EnginePayload::new(engine_state, self.model_name());
+        match self.status.lock() {
+            Ok(mut status) => {
+                *status = EngineSnapshot {
+                    state: payload.state,
+                    tier: payload.tier,
+                    model: payload.model.clone(),
+                    progress: payload.progress,
+                };
+            }
+            Err(_) => log::warn!("the engine status could not be recorded for the settings"),
+        }
+        self.ui.emit(EVENT_ENGINE, payload);
     }
 
     /// The file name of the model this machine is set up to use, when it has chosen one.

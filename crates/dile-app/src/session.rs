@@ -25,6 +25,12 @@
 //! text — belongs to `crate::engine`, which owns the one thread that talks to the engine
 //! process.
 //!
+//! **A setting applies without a restart, and on this thread.** The hotkey listener owns a
+//! global keyboard hook and the capture owns a device; both have to be replaced by whoever
+//! owns them, so [`SettingsStore`] raises a flag and the loop below acts on it between key
+//! presses. That is also why the loop waits with a timeout instead of blocking for ever on
+//! the action channel: a change made while nobody is dictating has to arrive anyway.
+//!
 //! **Silence never reaches an engine.** M0 found every canned hallucination in the robustness
 //! set sitting on the same ten seconds of applause (`docs/PROJECT.md`, log 2026-09-09), so a
 //! recording whose VAD summary says there was no speech is dropped here and the tray says
@@ -32,19 +38,26 @@
 //! says.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dile_capture::{Capture, LevelReceiver, Recording};
 use dile_hotkey::{Action, HotkeyListener};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::config::AppConfig;
 use crate::engine::EngineClient;
+use crate::settings::{Settings, SettingsStore};
 use crate::tray::Status;
 use crate::ui::{EVENT_LEVEL, Ui};
+
+/// How long the session waits for a key press before looking at the settings again.
+///
+/// Only the latency of a settings change that arrives while nobody is dictating, so there is
+/// no reason to spin faster. Every dictation is still driven by an event, not by this.
+const SETTINGS_POLL: Duration = Duration::from_millis(200);
 
 /// The payload of [`EVENT_LEVEL`].
 ///
@@ -116,36 +129,69 @@ impl Elapsed {
 /// a device can be plugged in a minute later.
 pub fn start(
     ui: Ui,
-    config: AppConfig,
+    store: SettingsStore,
     engine: EngineClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = HotkeyListener::spawn(config.hotkey)?;
+    let settings = store.get();
+    let listener = HotkeyListener::spawn(settings.hotkey_config())?;
     log::info!(
-        "hotkey hook installed: {:?} mode, second key {}",
-        config.hotkey.mode,
-        config.hotkey.second_key.is_some()
+        "hotkey hook installed: {} in {:?} mode, second key {}",
+        settings.hotkey.chord,
+        settings.hotkey.mode,
+        settings.hotkey.second_key
     );
+
+    // A flag rather than a channel: the listener's action channel is the one this thread
+    // blocks on, and a second channel would need a select that `std::sync::mpsc` does not
+    // have. The flag is read once per timeout, which is as often as it can matter.
+    let pending = Arc::new(AtomicBool::new(false));
+    let raised = Arc::clone(&pending);
+    store.on_change(move |change| {
+        if change.hotkey || change.capture {
+            raised.store(true, Ordering::SeqCst);
+        }
+    });
 
     thread::Builder::new()
         .name("dile-session".to_owned())
-        .spawn(move || run(&ui, &config, &engine, listener))?;
+        .spawn(move || run(&ui, &store, &engine, listener, &pending))?;
 
     Ok(())
 }
 
 /// The session thread: one action at a time, in the order the user produced them.
-fn run(ui: &Ui, config: &AppConfig, engine: &EngineClient, listener: HotkeyListener) {
+fn run(
+    ui: &Ui,
+    store: &SettingsStore,
+    engine: &EngineClient,
+    mut listener: HotkeyListener,
+    pending: &AtomicBool,
+) {
     let elapsed = Elapsed::new();
-    let mut capture = open_capture(ui, config, &elapsed);
+    let mut settings = store.get();
+    let mut capture = open_capture(ui, &settings, &elapsed);
 
-    // `recv` ends when the listener thread stops, which happens when the listener is dropped
-    // — and it is owned here, so that is at shutdown.
-    while let Ok(emitted) = listener.actions().recv() {
+    loop {
+        if pending.swap(false, Ordering::SeqCst) {
+            let next = store.get();
+            reapply(ui, &settings, &next, &elapsed, &mut listener, &mut capture);
+            settings = next;
+        }
+
+        // A timeout rather than a blocking receive, so a settings change made while nobody
+        // is dictating is applied within a fifth of a second. Disconnection ends the session:
+        // it means the listener thread stopped, which happens at shutdown.
+        let emitted = match listener.actions().recv_timeout(SETTINGS_POLL) {
+            Ok(emitted) => emitted,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
         match emitted.action {
             Action::StartRecording => {
                 if capture.is_none() {
                     // A microphone that was missing at start-up may be plugged in now.
-                    capture = open_capture(ui, config, &elapsed);
+                    capture = open_capture(ui, &settings, &elapsed);
                 }
                 let Some(open) = capture.as_ref() else {
                     continue;
@@ -197,7 +243,7 @@ fn run(ui: &Ui, config: &AppConfig, engine: &EngineClient, listener: HotkeyListe
                 ui.rest();
             }
 
-            // TODO(WP5): show the panel, empty, so a tap proves the hotkey works without
+            // TODO(WP5b): show the panel, empty, so a tap proves the hotkey works without
             // dictating anything (docs/PROJECT.md §3, Hotkey).
             Action::OpenPanelIdle => {
                 log::info!("a tap: the panel would open idle here");
@@ -208,19 +254,70 @@ fn run(ui: &Ui, config: &AppConfig, engine: &EngineClient, listener: HotkeyListe
     log::info!("the hotkey listener has stopped; the session is over");
 }
 
+/// Put a settings change into effect on the two things this thread owns.
+///
+/// **Only what moved.** Re-installing a global keyboard hook because somebody changed the
+/// recording cap would be a hook the whole machine pays for; re-opening the microphone
+/// because the chord changed would throw away the pre-roll ring for nothing.
+///
+/// A hook the operating system refuses leaves the previous one in place, because a settings
+/// window that can take the hotkey away from a running application would be worse than one
+/// that says no. The chord itself is checked when it is saved, so what reaches here is a
+/// chord that parses and an operating system that declined anyway.
+fn reapply(
+    ui: &Ui,
+    before: &Settings,
+    after: &Settings,
+    elapsed: &Elapsed,
+    listener: &mut HotkeyListener,
+    capture: &mut Option<Capture>,
+) {
+    if before.hotkey != after.hotkey {
+        match HotkeyListener::spawn(after.hotkey_config()) {
+            Ok(fresh) => {
+                // The assignment drops the previous listener, which takes its hook down and
+                // joins its thread. New first would mean two hooks answering one press.
+                *listener = fresh;
+                log::info!(
+                    "the hotkey is now {} in {:?} mode, second key {}",
+                    after.hotkey.chord,
+                    after.hotkey.mode,
+                    after.hotkey.second_key
+                );
+            }
+            Err(error) => log::error!(
+                "the new hotkey could not be installed, so the previous one is still in force: {error}"
+            ),
+        }
+    }
+
+    if before.capture != after.capture {
+        // Closed before it is opened: the same device cannot be opened twice, and the one
+        // being replaced is usually the one being asked for again.
+        *capture = None;
+        *capture = open_capture(ui, after, elapsed);
+        log::info!(
+            "the microphone is now {:?} with a {} s cap and {} ms of pre-roll",
+            after.capture.device,
+            after.capture.cap_secs,
+            after.capture.pre_roll_ms
+        );
+    }
+}
+
 /// Open the microphone and start forwarding its level stream.
 ///
 /// Returns `None` when there is no usable input device, having said so on the tray. The
 /// application keeps running: `docs/PROJECT.md` §3 puts the microphone behind a setting, and
 /// a tray application that exits because a headset is unplugged is one nobody leaves running.
-fn open_capture(ui: &Ui, config: &AppConfig, elapsed: &Elapsed) -> Option<Capture> {
-    match Capture::open(config.capture.clone()) {
+fn open_capture(ui: &Ui, settings: &Settings, elapsed: &Elapsed) -> Option<Capture> {
+    match Capture::open(settings.capture_config()) {
         Ok(capture) => {
             spawn_level_thread(
                 ui.clone(),
                 capture.levels(),
                 elapsed.clone(),
-                config.cap_ms(),
+                settings.cap_ms(),
             );
             ui.rest();
             Some(capture)

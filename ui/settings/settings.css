@@ -1,0 +1,447 @@
+/*
+  The settings window, in the product palette.
+
+  Dark grey only in v1 — a maintainer decision of 2026-09-13. Dile has one look, it is the
+  one the panel uses, and a light theme is a second set of screenshots and a second set of
+  contrast decisions for a window most people open twice. `color-scheme: dark` is what stops
+  the native scrollbar and the form controls from arriving white.
+
+  Two fonts, both already on the machine: the system UI face for everything, and a monospace
+  for chords, variants and the engine's numbers — the three places where character shapes
+  carry meaning. No web font: the content security policy is `default-src 'self'`, and a
+  settings window is not worth an exception to it.
+*/
+
+:root {
+  color-scheme: dark;
+
+  --p-0: #15171b;
+  --p-1: #1c1f24;
+  --p-2: #22252b;
+  --p-3: #292d35;
+  --p-4: #333841;
+  --p-line: #343942;
+  --p-line-2: #434956;
+  --p-txt: #eceef2;
+  --p-dim: #a2aab6;
+  --p-dim-2: #757d8a;
+  --p-green: #78d6a0;
+  --p-red: #e5484d;
+
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--p-2);
+  color: var(--p-txt);
+  font: 13px/1.45 var(--sans);
+  overflow: hidden;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ the left rail */
+
+#rail {
+  width: 168px;
+  flex: none;
+  background: var(--p-1);
+  border-right: 1px solid var(--p-line);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--p-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.rail-item:hover {
+  background: var(--p-3);
+  color: var(--p-txt);
+}
+
+.rail-item.on {
+  background: var(--p-3);
+  color: var(--p-txt);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--p-green);
+}
+
+/* ---------------------------------------------------------------------- the pane */
+
+#pane {
+  flex: 1;
+  min-width: 0;
+  padding: 16px 18px 30px;
+  overflow-y: auto;
+}
+
+.group {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--p-line);
+}
+
+.group:last-child {
+  border-bottom: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.group h2 {
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--p-dim-2);
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  min-height: 28px;
+}
+
+.field:last-child {
+  margin-bottom: 0;
+}
+
+.label {
+  width: 146px;
+  flex: none;
+  color: var(--p-dim);
+  font-size: 12.5px;
+}
+
+.control {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hint {
+  font-size: 11.5px;
+  color: var(--p-dim-2);
+  margin: 6px 0 0 158px;
+  line-height: 1.45;
+}
+
+.note {
+  font-size: 11.5px;
+  color: var(--p-dim-2);
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.dim {
+  color: var(--p-dim-2);
+}
+
+.readonly {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--p-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------- the controls */
+
+.keys {
+  display: flex;
+  gap: 4px;
+}
+
+.kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--p-1);
+  border: 1px solid var(--p-line-2);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 3px 8px;
+  color: var(--p-txt);
+}
+
+.button,
+.select,
+.number {
+  background: var(--p-1);
+  border: 1px solid var(--p-line-2);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--p-txt);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.button:hover,
+.select:hover {
+  border-color: var(--p-dim-2);
+}
+
+.number {
+  width: 80px;
+  cursor: text;
+  font-family: var(--mono);
+}
+
+.select {
+  max-width: 300px;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--p-1);
+  border: 1px solid var(--p-line-2);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--p-dim);
+  cursor: pointer;
+}
+
+.segmented button[aria-checked="true"] {
+  background: var(--p-4);
+  color: var(--p-txt);
+  font-weight: 600;
+}
+
+.switch {
+  width: 34px;
+  height: 19px;
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--p-4);
+  position: relative;
+  padding: 0;
+  cursor: pointer;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--p-dim);
+  transition: left 90ms ease-out;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--p-green);
+}
+
+.switch[aria-checked="true"]::after {
+  left: 17px;
+  background: var(--p-0);
+}
+
+input[type="range"] {
+  flex: 1;
+  max-width: 210px;
+  accent-color: var(--p-green);
+  cursor: pointer;
+}
+
+.readout {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--p-txt);
+  min-width: 52px;
+}
+
+/* ------------------------------------------------------------------ the dictionary */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.table th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--p-dim-2);
+  font-weight: 600;
+  padding: 0 8px 5px 0;
+}
+
+.table th.pin {
+  width: 54px;
+}
+
+.table th.drop {
+  width: 28px;
+}
+
+.table td {
+  padding: 4px 8px 4px 0;
+  border-top: 1px solid var(--p-line);
+  vertical-align: middle;
+}
+
+.cell {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--p-txt);
+}
+
+.cell.variants {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--p-dim);
+}
+
+.cell:hover {
+  border-color: var(--p-line);
+}
+
+.cell:focus {
+  border-color: var(--p-line-2);
+  background: var(--p-1);
+  outline: none;
+  color: var(--p-txt);
+}
+
+.cell.bad,
+.cell.bad:focus {
+  border-color: var(--p-red);
+}
+
+.drop-row {
+  border: 0;
+  background: none;
+  color: var(--p-dim-2);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.drop-row:hover {
+  color: var(--p-red);
+  background: var(--p-3);
+}
+
+.add {
+  margin-top: 9px;
+  color: var(--p-green);
+  font: inherit;
+  font-size: 12.5px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.add:hover {
+  text-decoration: underline;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--p-green);
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- the saved state */
+
+#status {
+  position: fixed;
+  right: 16px;
+  bottom: 8px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--p-dim-2);
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+  pointer-events: none;
+  max-width: 500px;
+  text-align: right;
+}
+
+#status.showing {
+  opacity: 1;
+}
+
+#status.bad {
+  color: var(--p-red);
+}
+
+/* One focus ring, in the accent, everywhere. The window is driven by Tab as much as by the
+   mouse: the rail, the segmented controls and the table are all buttons and inputs. */
+:focus-visible {
+  outline: 2px solid var(--p-green);
+  outline-offset: 1px;
+}

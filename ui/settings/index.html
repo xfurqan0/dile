@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dile</title>
+    <!--
+      The settings window of docs/PROJECT.md WP5 — 720 x 520, a 168 px left rail and one
+      pane, in the "Konsept B Kart" visual language the maintainer approved on 2026-09-13.
+
+      There is deliberately no build step and no npm, which is the same decision ui/index.html
+      carries: this is vanilla HTML, one stylesheet and one script, and `frontendDist` points
+      at ui/ as static assets. A settings form is not a reason to take on a bundler, a
+      lockfile and two minutes of CI.
+
+      **There is no text in this file.** Every visible word is a `data-i18n` attribute
+      resolved at run time from locales/<lang>.json — the same catalogue the Rust side reads,
+      handed over by the `get_strings` command — and crates/dile-app/tests/i18n.rs fails the
+      build on a sentence typed into the markup or the script.
+
+      `lang` is set by the script once the catalogue arrives; it starts as `en` because the
+      fallback catalogue is English.
+    -->
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div id="shell">
+      <nav id="rail" aria-label="Dile">
+        <button type="button" class="rail-item" data-section="hotkey" data-i18n="settings.nav.hotkey"></button>
+        <button type="button" class="rail-item" data-section="cleanup" data-i18n="settings.nav.cleanup"></button>
+        <button type="button" class="rail-item" data-section="engine" data-i18n="settings.nav.engine"></button>
+        <button type="button" class="rail-item" data-section="dictionary" data-i18n="settings.nav.dictionary"></button>
+        <button type="button" class="rail-item" data-section="general" data-i18n="settings.nav.general"></button>
+      </nav>
+
+      <main id="pane">
+        <section class="section" data-section="hotkey">
+          <div class="group">
+            <h2 data-i18n="settings.group.hotkey"></h2>
+            <div class="field">
+              <span class="label" id="chord-label" data-i18n="settings.hotkey.chord"></span>
+              <span class="control">
+                <span id="chord-keys" class="keys" aria-labelledby="chord-label"></span>
+                <button type="button" class="button" id="chord-change" data-i18n="settings.hotkey.change"></button>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" data-i18n="settings.hotkey.mode"></span>
+              <span class="control">
+                <span class="segmented" id="mode" role="radiogroup">
+                  <button type="button" role="radio" data-value="hold" data-i18n="settings.hotkey.mode.hold"></button>
+                  <button type="button" role="radio" data-value="toggle" data-i18n="settings.hotkey.mode.toggle"></button>
+                </span>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" id="second-label" data-i18n="settings.hotkey.second"></span>
+              <span class="control">
+                <button type="button" class="switch" id="second-key" role="switch" aria-labelledby="second-label"></button>
+                <span class="note" data-i18n="settings.hotkey.second.note"></span>
+              </span>
+            </div>
+            <p class="hint" data-i18n="settings.hotkey.hint"></p>
+          </div>
+
+          <div class="group">
+            <h2 data-i18n="settings.group.recording"></h2>
+            <div class="field">
+              <label class="label" for="cap" data-i18n="settings.recording.cap"></label>
+              <span class="control">
+                <input type="range" id="cap" min="1" max="300" step="1" />
+                <span class="readout" id="cap-value"></span>
+                <span class="note" data-i18n="settings.recording.cap.max"></span>
+              </span>
+            </div>
+            <div class="field">
+              <label class="label" for="device" data-i18n="settings.recording.device"></label>
+              <span class="control">
+                <select id="device" class="select"></select>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" data-section="cleanup" hidden>
+          <div class="group">
+            <h2 data-i18n="settings.group.cleanup"></h2>
+            <div class="field">
+              <span class="label" data-i18n="settings.cleanup.level"></span>
+              <span class="control">
+                <span class="segmented" id="strictness" role="radiogroup">
+                  <button type="button" role="radio" data-value="light" data-i18n="settings.cleanup.light"></button>
+                  <button type="button" role="radio" data-value="medium" data-i18n="settings.cleanup.medium"></button>
+                  <button type="button" role="radio" data-value="strict" data-i18n="settings.cleanup.strict"></button>
+                </span>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" id="auto-label" data-i18n="settings.cleanup.autotransfer"></span>
+              <span class="control">
+                <button type="button" class="switch" id="auto-transfer" role="switch" aria-labelledby="auto-label"></button>
+                <input type="number" id="auto-transfer-ms" class="number" min="500" max="5000" step="100" aria-labelledby="auto-label" />
+                <span class="note" data-i18n="settings.cleanup.autotransfer.unit"></span>
+              </span>
+            </div>
+            <p class="hint" data-i18n="settings.cleanup.autotransfer.hint"></p>
+          </div>
+        </section>
+
+        <section class="section" data-section="engine" hidden>
+          <div class="group">
+            <h2 data-i18n="settings.group.engine"></h2>
+            <div class="field">
+              <label class="label" for="tier" data-i18n="settings.engine.tier"></label>
+              <span class="control">
+                <select id="tier" class="select">
+                  <option value="auto" data-i18n="settings.engine.tier.auto"></option>
+                  <option value="vulkan" data-i18n="settings.engine.tier.vulkan"></option>
+                  <option value="cpu" data-i18n="settings.engine.tier.cpu"></option>
+                </select>
+                <button type="button" class="button" id="reprobe" data-i18n="settings.engine.probe.rerun"></button>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" data-i18n="settings.engine.model"></span>
+              <span class="control">
+                <span class="readonly" id="model"></span>
+                <button type="button" class="button" id="open-models" data-i18n="settings.engine.models.open"></button>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" data-i18n="settings.engine.status"></span>
+              <span class="control">
+                <span class="stack">
+                  <span class="mono" id="engine-state"></span>
+                  <span class="mono dim" id="probe-line"></span>
+                </span>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" data-section="dictionary" hidden>
+          <div class="group">
+            <h2 data-i18n="settings.group.dictionary"></h2>
+            <table class="table" id="dictionary">
+              <thead>
+                <tr>
+                  <th data-i18n="settings.dictionary.canonical"></th>
+                  <th data-i18n="settings.dictionary.variants"></th>
+                  <th class="pin" data-i18n="settings.dictionary.pinned"></th>
+                  <th class="drop"></th>
+                </tr>
+              </thead>
+              <tbody id="dictionary-rows"></tbody>
+            </table>
+            <p class="hint" id="dictionary-empty" data-i18n="settings.dictionary.none"></p>
+            <button type="button" class="add" id="dictionary-add" data-i18n="settings.dictionary.add"></button>
+          </div>
+        </section>
+
+        <section class="section" data-section="general" hidden>
+          <div class="group">
+            <h2 data-i18n="settings.group.general"></h2>
+            <div class="field">
+              <span class="label" data-i18n="settings.general.language"></span>
+              <span class="control">
+                <span class="segmented" id="language" role="radiogroup">
+                  <button type="button" role="radio" data-value="auto" data-i18n="settings.general.language.auto"></button>
+                  <button type="button" role="radio" data-value="tr" data-i18n="settings.general.language.tr"></button>
+                  <button type="button" role="radio" data-value="en" data-i18n="settings.general.language.en"></button>
+                </span>
+              </span>
+            </div>
+            <div class="field">
+              <span class="label" id="autostart-label" data-i18n="settings.general.autostart"></span>
+              <span class="control">
+                <button type="button" class="switch" id="autostart" role="switch" aria-labelledby="autostart-label"></button>
+                <span class="note" data-i18n="settings.general.autostart.note"></span>
+              </span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <p id="status" aria-live="polite"></p>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

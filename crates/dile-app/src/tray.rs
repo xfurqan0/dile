@@ -4,10 +4,15 @@
 //! never will be: the product is a hotkey, a strip that appears for a second and a menu with
 //! a way into the settings and a way out.
 //!
-//! **Two menu entries, and one of them is a placeholder.** `Settings` has no window to open
-//! until WP5 and does nothing rather than opening something empty; `Quit` is real from the
-//! first commit, because a tray application that can only be stopped from Task Manager is one
-//! users learn to distrust.
+//! **Two menu entries, and both of them are real.** `Settings` opens the window WP5 built —
+//! once, whatever a person does to the menu — and `Quit` has been real from the first commit,
+//! because a tray application that can only be stopped from Task Manager is one users learn to
+//! distrust.
+//!
+//! **The menu is rebuilt when the language changes**, rather than its items being relabelled
+//! one by one. `docs/PROJECT.md` §6 WP6 asks for a language switch without a restart, and the
+//! handler lives on the tray icon rather than on the menu — so a new menu inherits it and the
+//! entries keep working.
 //!
 //! **The icon carries the state.** WP2 gives the tray three icons — the same waveform mark
 //! with its accent bar in the idle green, in red while recording and in amber while working
@@ -27,26 +32,17 @@
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{App, AppHandle};
+use tauri::{App, AppHandle, Manager, Runtime};
 
 use crate::i18n::Strings;
 
 /// Identifier of the one tray icon this application owns.
 pub const TRAY_ID: &str = "dile";
 
-/// Menu item: open the settings window. WP5.
+/// Menu item: open the settings window.
 const MENU_SETTINGS: &str = "dile-settings";
 /// Menu item: stop the application.
 const MENU_QUIT: &str = "dile-quit";
-
-/// The hotkey shown in the tooltip.
-///
-/// A constant rather than a reading of [`crate::config::AppConfig`], because a chord has no
-/// display form yet: `dile_hotkey::Chord` is a set of modifier families and a key, and
-/// turning one into `Ctrl+Alt+Space` belongs with the settings window (WP5), where the user
-/// can also change it. Until then this is the chord the application actually registers, so
-/// the tooltip says something true.
-const DEFAULT_HOTKEY: &str = "Ctrl+Alt+Space";
 
 /// The idle mark: the accent bar in the application's green.
 const ICON_IDLE: &[u8] = include_bytes!("../icons/tray-idle.png");
@@ -152,8 +148,8 @@ impl Status {
         }
     }
 
-    /// This state's tooltip, in the user's language.
-    fn tooltip(self, strings: &Strings) -> String {
+    /// This state's tooltip, in the user's language, naming the chord the user chose.
+    fn tooltip(self, strings: &Strings, hotkey: &str) -> String {
         // Every tooltip is offered both holes; `interpolate` leaves alone the ones a given
         // string does not have, so there is no per-state parameter list to keep in step.
         let percent = match self {
@@ -162,7 +158,7 @@ impl Status {
         };
         strings.format(
             self.tooltip_key(),
-            &[("hotkey", DEFAULT_HOTKEY), ("percent", percent.as_str())],
+            &[("hotkey", hotkey), ("percent", percent.as_str())],
         )
     }
 }
@@ -171,35 +167,16 @@ impl Status {
 ///
 /// Called once from the setup hook, with the application idle: the hotkey listener starts
 /// after it, so the first thing the user sees is the state the application is really in.
-pub fn create(app: &App, strings: &Strings) -> tauri::Result<()> {
-    let settings = MenuItem::with_id(
-        app,
-        MENU_SETTINGS,
-        strings.text("tray.menu.settings"),
-        true,
-        None::<&str>,
-    )?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(
-        app,
-        MENU_QUIT,
-        strings.text("tray.menu.quit"),
-        true,
-        None::<&str>,
-    )?;
-    let menu = Menu::with_items(app, &[&settings, &separator, &quit])?;
+pub fn create(app: &App, strings: &Strings, hotkey: &str) -> tauri::Result<()> {
+    let menu = build_menu(app, strings)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(Status::Idle.icon_bytes())?)
-        .tooltip(Status::Idle.tooltip(strings))
+        .tooltip(Status::Idle.tooltip(strings, hotkey))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            // TODO(WP5): open the settings window here. Deliberately not an empty window: a
-            // menu entry that opens nothing is a bug report, one that does nothing yet is a
-            // skeleton. The arm is written out rather than folded into the catch-all so
-            // that WP5 has one obvious place to fill in.
-            MENU_SETTINGS => {}
+            MENU_SETTINGS => crate::settings::window::open(app),
             MENU_QUIT => app.exit(0),
             // Every id this menu builds is handled above, so reaching here means a future
             // menu item whose arm was forgotten.
@@ -210,11 +187,51 @@ pub fn create(app: &App, strings: &Strings) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The two entries, in the language of the moment.
+fn build_menu<R: Runtime, M: Manager<R>>(manager: &M, strings: &Strings) -> tauri::Result<Menu<R>> {
+    let settings = MenuItem::with_id(
+        manager,
+        MENU_SETTINGS,
+        strings.text("tray.menu.settings"),
+        true,
+        None::<&str>,
+    )?;
+    let separator = PredefinedMenuItem::separator(manager)?;
+    let quit = MenuItem::with_id(
+        manager,
+        MENU_QUIT,
+        strings.text("tray.menu.quit"),
+        true,
+        None::<&str>,
+    )?;
+    Menu::with_items(manager, &[&settings, &separator, &quit])
+}
+
+/// Put the menu back in a new language.
+///
+/// A whole new menu rather than two `set_text` calls: the separator and the order are part of
+/// the menu, the handler is not — it belongs to the tray icon — and rebuilding is the one
+/// operation that cannot leave an entry in the previous language.
+pub fn relabel(app: &AppHandle, strings: &Strings) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        log::warn!("no tray icon to put a new menu on");
+        return;
+    };
+    match build_menu(app, strings) {
+        Ok(menu) => {
+            if let Err(error) = tray.set_menu(Some(menu)) {
+                log::warn!("the tray menu could not be replaced: {error}");
+            }
+        }
+        Err(error) => log::warn!("the tray menu could not be rebuilt: {error}"),
+    }
+}
+
 /// Put a state on the tray: its icon, and its tooltip in the user's language.
 ///
 /// Safe to call from any thread — Tauri dispatches the change to the main one. Every failure
 /// is logged and swallowed, because none of them is worth ending a session over.
-pub fn show(app: &AppHandle, strings: &Strings, status: Status) {
+pub fn show(app: &AppHandle, strings: &Strings, hotkey: &str, status: Status) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         log::warn!("no tray icon to show the {} state on", status.event_state());
         return;
@@ -229,7 +246,7 @@ pub fn show(app: &AppHandle, strings: &Strings, status: Status) {
         Err(error) => log::warn!("a tray icon could not be decoded: {error}"),
     }
 
-    if let Err(error) = tray.set_tooltip(Some(status.tooltip(strings))) {
+    if let Err(error) = tray.set_tooltip(Some(status.tooltip(strings, hotkey))) {
         log::warn!("the tray tooltip could not be changed: {error}");
     }
 }
@@ -257,7 +274,7 @@ mod tests {
         for language in ["en", "tr"] {
             let strings = Strings::for_locale(language);
             for status in EVERY_STATUS {
-                let tooltip = status.tooltip(&strings);
+                let tooltip = status.tooltip(&strings, "Ctrl+Alt+Space");
                 // A key with no string behind it renders as the key itself, which is exactly
                 // the failure this catches.
                 assert_ne!(
@@ -289,13 +306,17 @@ mod tests {
     fn the_download_tooltip_carries_the_number_and_the_others_do_not_go_looking_for_one() {
         for language in ["en", "tr"] {
             let strings = Strings::for_locale(language);
-            let tooltip = Status::Downloading(42).tooltip(&strings);
+            let tooltip = Status::Downloading(42).tooltip(&strings, "Ctrl+Alt+Space");
             assert!(
                 tooltip.contains("42"),
                 "{language}: the download tooltip lost its percentage: {tooltip}"
             );
             // Nothing else has a hole for it, so nothing else may end up with a stray number.
-            assert!(!Status::Idle.tooltip(&strings).contains("42"));
+            assert!(
+                !Status::Idle
+                    .tooltip(&strings, "Ctrl+Alt+Space")
+                    .contains("42")
+            );
         }
     }
 

@@ -65,3 +65,13 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # does not have to be. The engine runs in `dile-engine-host`, a process of its own, so that
 # a Vulkan driver fault takes the engine down and not the tray (docs/PROJECT.md §3); this
 # crate links the wire and never the runtime.
+# What language Windows is set to, for the "Automatic" row of the language setting. Four
+# hundred lines over `windows-sys`, which is already in this tree through Tauri, and the
+# alternative in an application that forbids unsafe code is a plugin that brings a JavaScript
+# API nothing here would call.
+sys-locale = "0.3.0"
+
+# Start with Windows, which is a settings switch (WP5) and a registry value under
+# `HKCU\...\Run`. The plugin is the supported way to write it from a Tauri application, and
+# it is applied from Rust rather than from the webview: see `capabilities/settings.json`.
+tauri-plugin-autostart = "2"

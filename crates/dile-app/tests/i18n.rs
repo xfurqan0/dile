@@ -12,10 +12,13 @@
 //!   offered. That is why the status table lives in `locales/README.md`.
 //! * **The same holes.** A translation's placeholders are English's placeholders, or the
 //!   panel renders `{hotkey}` at somebody.
-//! * **No hard-coded text.** The last two tests read every `.rs` file under
+//! * **No hard-coded text.** The last three tests read every `.rs` file under
 //!   `crates/dile-app/src` — the whole tree rather than just its top level, because WP3 put
 //!   the engine in a subdirectory and a rule with a directory-shaped hole in it is not a
-//!   rule — and `ui/index.html`, and fail on prose that never passed through a catalogue.
+//!   rule — and every `.html` and `.js` file under `ui/`, and fail on prose that never passed
+//!   through a catalogue. WP5 is what made the markup half of that rule bite: the settings
+//!   window is sixty labels, and every one of them is a `data-i18n` attribute resolved at
+//!   run time from the same catalogue the Rust side reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -168,7 +171,14 @@ fn the_keys_that_carry_a_count_are_frozen_so_a_new_one_is_a_decision() {
 
     assert_eq!(
         found,
-        ["panel.processing.elapsed", "panel.recording.elapsed"]
+        [
+            "panel.processing.elapsed",
+            "panel.recording.elapsed",
+            // Added by WP5, deliberately: the recording cap reads "60 s" next to its slider.
+            // `s` and `sn` are unit abbreviations, which do not inflate after a numeral in
+            // either language, so this needs no plural rule either.
+            "settings.recording.cap.value",
+        ]
     );
 }
 
@@ -331,7 +341,7 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
     .into();
 
     let src = repo().join("crates/dile-app/src");
-    let sources = rust_files(&src);
+    let sources = source_files(&src, "rs");
     let mut checked = 0;
     for path in &sources {
         let source = fs::read_to_string(path).expect("read a source file");
@@ -350,18 +360,20 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
         }
     }
     assert!(checked >= 8, "the scan found only {checked} source files");
-    assert!(
-        sources
-            .iter()
-            .any(|path| path.components().any(|part| part.as_os_str() == "engine")),
-        "the scan never reached src/engine/, so a subdirectory could hide a sentence"
-    );
+    for directory in ["engine", "settings"] {
+        assert!(
+            sources
+                .iter()
+                .any(|path| path.components().any(|part| part.as_os_str() == directory)),
+            "the scan never reached src/{directory}/, so a subdirectory could hide a sentence"
+        );
+    }
 }
 
-/// Every `.rs` file under `directory`, including the ones in subdirectories.
+/// Every file with this extension under `directory`, including the ones in subdirectories.
 ///
 /// Sorted, so a failure names the same file on every machine.
-fn rust_files(directory: &Path) -> Vec<PathBuf> {
+fn source_files(directory: &Path, extension: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut pending = vec![directory.to_path_buf()];
     while let Some(current) = pending.pop() {
@@ -369,7 +381,7 @@ fn rust_files(directory: &Path) -> Vec<PathBuf> {
             let path = entry.expect("a directory entry").path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
+            } else if path.extension().is_some_and(|found| found == extension) {
                 found.push(path);
             }
         }
@@ -378,22 +390,35 @@ fn rust_files(directory: &Path) -> Vec<PathBuf> {
     found
 }
 
-#[test]
-fn the_markup_hard_codes_no_text_a_user_could_read() {
-    // WP5 fills ui/ with the review panel. The rule is written now so the first sentence
-    // anybody types into the markup fails the build rather than shipping untranslatable.
-    let html = fs::read_to_string(repo().join("ui/index.html")).expect("read ui/index.html");
+/// The text a reader would see in one HTML document: everything outside a tag, after the
+/// comments, the `<head>` and anything inside `<script>` or `<style>` have gone.
+fn visible_text(html: &str) -> String {
+    let mut rest = html;
+    let mut without_comments = String::with_capacity(html.len());
+    while let Some(start) = rest.find("<!--") {
+        without_comments.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match after.find("-->") {
+            Some(end) => rest = &after[end + 3..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    without_comments.push_str(rest);
+
+    // Only the body, and nothing a browser executes or styles with.
+    let body = without_comments
+        .split("<body")
+        .nth(1)
+        .unwrap_or(&without_comments)
+        .to_owned();
+    let body = strip_element(&body, "script");
+    let body = strip_element(&body, "style");
 
     let mut text = String::new();
     let mut inside_tag = false;
-    let mut rest = html.as_str();
-    // Comments, <style> and <head> are not text a user reads.
-    while let Some(start) = rest.find("<!--") {
-        let after = &rest[start..];
-        let end = after.find("-->").map_or(after.len(), |at| start + at + 3);
-        rest = &rest[end.min(rest.len())..];
-    }
-    let body = html.split("<body").nth(1).unwrap_or(rest);
     for character in body.chars() {
         match character {
             '<' => inside_tag = true,
@@ -402,10 +427,139 @@ fn the_markup_hard_codes_no_text_a_user_could_read() {
             _ => {}
         }
     }
+    text
+}
 
+/// Everything between `<name …>` and `</name>`, removed.
+fn strip_element(html: &str, name: &str) -> String {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(&open) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match after.find(&close) {
+            Some(end) => rest = &after[end + close.len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Every string literal in a JavaScript file, single, double or backtick quoted.
+///
+/// Deliberately simpler than a parser: it over-reports rather than under-reports, and every
+/// literal it finds is then filtered by the same prose rule the Rust scan uses. A regular
+/// expression in the source would be read as a string and dropped for having no two words in
+/// it, which is the right answer for the wrong reason and harmless either way.
+fn js_literals(source: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut found = Vec::new();
+    let mut index = 0;
+    let mut since = String::new();
+    while index < chars.len() {
+        // A comment is prose by design, exactly as in the Rust scan.
+        if chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if chars[index] == '/' && chars.get(index + 1) == Some(&'*') {
+            index += 2;
+            while index + 1 < chars.len() && !(chars[index] == '*' && chars[index + 1] == '/') {
+                index += 1;
+            }
+            index += 2;
+            continue;
+        }
+
+        let quote = chars[index];
+        if quote == '"' || quote == '\'' || quote == '`' {
+            let mut value = String::new();
+            index += 1;
+            while index < chars.len() && chars[index] != quote {
+                if chars[index] == '\\' {
+                    index += 1;
+                }
+                if index < chars.len() {
+                    value.push(chars[index]);
+                }
+                index += 1;
+            }
+            index += 1;
+            found.push((value, since.clone()));
+            since.clear();
+        } else {
+            since.push(chars[index]);
+            index += 1;
+        }
+    }
+    found
+}
+
+#[test]
+fn the_markup_hard_codes_no_text_a_user_could_read() {
+    // Every `.html` under ui/, not just the panel's: WP5's settings window is a second
+    // document with sixty labels in it, and a rule that only covered the first file would
+    // have stopped applying on the day it started to matter.
+    let ui = repo().join("ui");
+    let documents = source_files(&ui, "html");
     assert!(
-        text.trim().is_empty(),
-        "ui/index.html carries text: {:?} — every visible word comes from locales/",
-        text.trim()
+        documents.len() >= 2,
+        "the scan found {} documents under ui/",
+        documents.len()
     );
+
+    for path in &documents {
+        let html = fs::read_to_string(path).expect("read a document");
+        let text = visible_text(&html);
+        assert!(
+            text.trim().is_empty(),
+            "{} carries text: {:?} — every visible word comes from locales/",
+            path.display(),
+            text.trim()
+        );
+    }
+}
+
+#[test]
+fn the_scripts_hard_code_no_text_a_user_could_read() {
+    // The settings window resolves `data-i18n` attributes at run time, so a sentence typed
+    // into the script is exactly as untranslatable as one typed into the markup — and easier
+    // to miss, because nothing about it looks like a label.
+    let allowed: BTreeSet<&str> = [
+        // Not prose: the two spellings of the excluded chord, shown as key caps.
+        "Ctrl+Alt+Space",
+    ]
+    .into();
+
+    let scripts = source_files(&repo().join("ui"), "js");
+    assert!(!scripts.is_empty(), "the scan found no scripts under ui/");
+
+    for path in &scripts {
+        let source = fs::read_to_string(path).expect("read a script");
+        for (value, before) in js_literals(&source) {
+            let head = before.trim_end();
+            // A diagnostic reaches a developer console, never a window. The same rule the
+            // Rust scan applies to `log::warn!`.
+            let diagnostic = head.ends_with("console.error(")
+                || head.ends_with("console.warn(")
+                || head.ends_with("console.info(")
+                || head.ends_with("console.debug(")
+                || head.ends_with("console.log(");
+            if diagnostic || !is_prose(&value) || allowed.contains(value.as_str()) {
+                continue;
+            }
+            panic!(
+                "{}: hard-coded UI text {value:?} — every visible word comes from locales/",
+                path.display()
+            );
+        }
+    }
 }

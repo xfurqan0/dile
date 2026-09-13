@@ -17,10 +17,12 @@
 //! here, and `tests/i18n.rs` freezes the set of keys that carry a count so that adding one is
 //! a decision somebody makes on purpose.
 //!
-//! **The language is not chosen yet.** WP5 adds the settings override and reads the Windows
-//! UI language; until then [`Strings::system`] answers English. Deciding it in one place now
-//! is what stops WP5 from having to unpick a tray that guessed one language and a panel that
-//! guessed another.
+//! **The language is chosen in one place.** [`Strings::system`] reads the operating system's
+//! UI language and [`Strings::for_setting`] puts the user's choice in front of it, which is
+//! the whole of the language decision: the tray, the dialogs and the settings window all come
+//! out of the same catalogue, so they cannot end up in two different languages. The catalogue
+//! is replaceable at run time — `docs/PROJECT.md` §6 WP6 asks for a language switch without a
+//! restart, and the switch is in WP5's settings window.
 
 use std::collections::BTreeMap;
 
@@ -49,6 +51,19 @@ pub fn parse(text: &str) -> BTreeMap<String, String> {
     serde_json::from_str(text).unwrap_or_default()
 }
 
+/// The language Windows is set to, as a primary subtag, or `"en"` when it will not say.
+///
+/// The one place the operating system is asked. `docs/PROJECT.md` §3 ships EN and TR, so a
+/// machine set to anything else lands on English through [`Strings::for_locale`] rather than
+/// being special-cased here.
+#[must_use]
+pub fn system_locale() -> String {
+    sys_locale::get_locale()
+        .map(|locale| primary_subtag(&locale))
+        .filter(|locale| !locale.is_empty())
+        .unwrap_or_else(|| "en".to_owned())
+}
+
 /// The primary subtag of a language tag: `tr-TR` and `TR_tr` both become `tr`.
 #[must_use]
 pub fn primary_subtag(locale: &str) -> String {
@@ -75,6 +90,7 @@ pub fn interpolate(template: &str, params: &[(&str, &str)]) -> String {
 /// The strings of one language, with English behind them.
 #[derive(Debug)]
 pub struct Strings {
+    locale: String,
     messages: BTreeMap<String, String>,
     fallback: BTreeMap<String, String>,
 }
@@ -84,25 +100,58 @@ impl Strings {
     #[must_use]
     pub fn for_locale(locale: &str) -> Self {
         let primary = primary_subtag(locale);
-        let messages = match primary.as_str() {
+        // A language this build does not carry *is* English, rather than being English with
+        // a foreign name on it: the webview stamps this on the document's `lang`, and a page
+        // that says it is German while reading English is a page a screen reader mispronounces.
+        let (locale, messages) = match source(&primary) {
             // English is the fallback; loading it twice would only double the memory.
-            "en" => BTreeMap::new(),
-            other => source(other).map(parse).unwrap_or_default(),
+            Some(_) if primary == "en" => (primary, BTreeMap::new()),
+            Some(text) => (primary, parse(text)),
+            None => ("en".to_owned(), BTreeMap::new()),
         };
         Strings {
+            locale,
             messages,
             fallback: parse(EN),
         }
     }
 
-    /// The language the application is in.
-    ///
-    /// **English, always, in WP0.** WP5 replaces the body with the settings override and
-    /// then the operating system's UI language; every caller already goes through here, so
-    /// that change is one function rather than a search for hard-coded `"en"`.
+    /// The language the operating system is set to.
     #[must_use]
     pub fn system() -> Self {
-        Self::for_locale("en")
+        Self::for_locale(&system_locale())
+    }
+
+    /// The language the user asked for, falling back to the operating system's.
+    ///
+    /// The `Option` is the "Automatic" row of the setting: a language tag when the user
+    /// picked one, `None` when they left it to the machine.
+    #[must_use]
+    pub fn for_setting(tag: Option<&str>) -> Self {
+        match tag {
+            Some(tag) => Self::for_locale(tag),
+            None => Self::system(),
+        }
+    }
+
+    /// The language this catalogue is in, as a primary subtag.
+    #[must_use]
+    pub fn locale(&self) -> &str {
+        &self.locale
+    }
+
+    /// Every string of this language, English behind it, as the webview reads them.
+    ///
+    /// The settings window resolves its own `data-i18n` attributes, so it needs the whole
+    /// catalogue rather than one key at a time — a window with sixty labels would otherwise
+    /// be sixty round trips over the IPC boundary before it could paint.
+    #[must_use]
+    pub fn all(&self) -> BTreeMap<String, String> {
+        let mut merged = self.fallback.clone();
+        for (key, value) in &self.messages {
+            merged.insert(key.clone(), value.clone());
+        }
+        merged
     }
 
     /// One string, with no placeholders in it.
@@ -142,9 +191,43 @@ mod tests {
 
         let german = Strings::for_locale("de-DE");
         assert_eq!(german.text("tray.menu.quit"), "Quit");
+        assert_eq!(
+            german.locale(),
+            "en",
+            "a language this build does not carry is English, not German-with-English-in-it"
+        );
+        assert_eq!(turkish.locale(), "tr");
 
         // A key nobody wrote renders as itself, not as an empty menu entry.
         assert_eq!(turkish.text("tray.menu.nothing"), "tray.menu.nothing");
+    }
+
+    #[test]
+    fn the_whole_catalogue_is_english_with_the_chosen_language_on_top() {
+        let turkish = Strings::for_locale("tr");
+        let all = turkish.all();
+
+        assert_eq!(all.get("tray.menu.quit").map(String::as_str), Some("Çık"));
+        // Every English key is present even if a translation ever went missing, because the
+        // settings window resolves its labels out of this map and a gap would render as a key.
+        let english = Strings::for_locale("en");
+        for key in english.all().keys() {
+            assert!(
+                all.contains_key(key),
+                "{key} is missing from the merged catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_language_is_one_this_build_carries() {
+        // Whatever this machine is set to, the answer is a catalogue Dile ships.
+        let system = Strings::system();
+        assert!(
+            matches!(system.locale(), "en" | "tr"),
+            "{}",
+            system.locale()
+        );
     }
 
     #[test]
@@ -155,7 +238,9 @@ mod tests {
         );
         assert_eq!(interpolate("{a} and {b}", &[("a", "one")]), "one and {b}");
 
-        let english = Strings::system();
+        // Not `system()`: this machine's own UI language is whatever the maintainer set it
+        // to, and a test that changes answer with Windows' regional settings is not a test.
+        let english = Strings::for_locale("en");
         assert_eq!(
             english.format("tray.tooltip.idle", &[("hotkey", "Ctrl+Alt+Space")]),
             "Dile — hold Ctrl+Alt+Space to dictate"

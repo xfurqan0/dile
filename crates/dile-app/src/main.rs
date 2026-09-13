@@ -2,24 +2,26 @@
 //!
 //! **Hold the key, speak, let go, and cleaned Turkish comes back.** What this binary does
 //! today: put an icon in the system tray, install the global hotkey, open the microphone,
-//! record for as long as `Ctrl+Alt+Space` is held, and hand the buffer to an engine running
-//! in a process of its own — which transcribes it, passes it through the Turkish cleanup
-//! rules and logs the result. What is missing is the last step of the product: somewhere for
-//! that text to *go*, which is WP5's panel and paste.
+//! record for as long as the chord is held, and hand the buffer to an engine running in a
+//! process of its own — which transcribes it, passes it through the Turkish cleanup rules and
+//! logs the result. Everything about that is now a setting a person can change while it runs.
+//! What is missing is the last step of the product: somewhere for that text to *go*, which is
+//! WP5b's panel and paste.
 //!
 //! | Behaviour | Package |
 //! |---|---|
 //! | Hotkey, microphone, level stream, VAD, recording cap | **WP2, done** |
 //! | The engine in its own process, the Vulkan probe, the model downloader | **WP3, done** |
 //! | Turkish cleanup, hallucination filter, dictionary | **WP4, done** |
-//! | The review panel, paste with clipboard restore, settings | WP5 |
+//! | Settings file, settings window, dictionary editing, autostart | **WP5a, done** |
+//! | The review panel and paste with clipboard restore | WP5b |
 //! | Installer, winget, signing preparation | WP7 |
 //!
-//! **No window is shown at start**, and that is a product decision rather than an
-//! oversight. Dile has no main window: the panel of `docs/PROJECT.md` §3 appears when the
-//! user speaks and hides itself again. `tauri.conf.json` therefore declares the panel with
-//! `visible: false`, and nothing here shows it — a window that flashes on start-up is the
-//! first thing users complain about in a tray application.
+//! **No window is shown at start**, and that is a product decision rather than an oversight.
+//! Dile has no main window: the panel of `docs/PROJECT.md` §3 appears when the user speaks and
+//! hides itself again, and the settings window is built the first time somebody asks for it.
+//! A window that flashes on start-up is the first thing users complain about in a tray
+//! application.
 //!
 //! **Three failures, treated differently.** A global keyboard hook that will not install is
 //! fatal: every one of Dile's features begins with a key press, so a tray icon that cannot
@@ -28,28 +30,35 @@
 //! in a minute later. An engine that will not start is not either, and that is WP3's whole
 //! point — the hotkey, the microphone and the tray keep working while the engine is missing,
 //! downloading, probing, restarting or given up on, and the tray says which.
+//!
+//! **Every setting applies without a restart.** The settings file is read once, here, and
+//! held in a [`settings::SettingsStore`] that three threads subscribe to: the session
+//! re-installs the hook and re-opens the microphone, the engine supervisor reads the
+//! strictness and the dictionary at the moment it uses them, and the two listeners below
+//! carry the language to the tray and the autostart switch to the registry.
 
 // A tray app has no console. Kept in debug builds so `cargo tauri dev` still prints.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
-mod config;
 mod engine;
 mod i18n;
 mod session;
+mod settings;
 mod tray;
 mod ui;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use config::AppConfig;
 use i18n::Strings;
+use settings::{Settings, SettingsStore};
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 use ui::Ui;
 
 fn main() {
     // Debug builds print the session to the console `cargo tauri dev` attaches; a release
-    // build is windowed, has nowhere to write, and installs no logger at all. WP5 brings the
+    // build is windowed, has nowhere to write, and installs no logger at all. WP7 brings the
     // log file, and with it the reporting a released build can do.
     //
     // `RUST_LOG` still overrides the level, which is how a capture problem gets looked at:
@@ -60,43 +69,127 @@ fn main() {
         .parse_default_env()
         .try_init();
 
-    // One language decision for the whole process. WP5 makes it the settings override and
-    // then the operating system's UI language; every string already goes through it, so the
-    // tray menu and the panel cannot end up in two different languages the way nazar-tray's
-    // did between its WP4 and WP5.
-    let strings = Arc::new(Strings::system());
-
-    // One configuration for the whole process, and no file behind it yet: WP5 is what reads
-    // and writes these. See `config.rs` for what each default is and why.
-    let config = AppConfig::default();
-
     tauri::Builder::default()
         // The consent dialog of WP3, and the only thing this plugin is used for. It is
-        // called from Rust, on the engine's own thread, and the panel is **not** granted any
-        // dialog permission in `capabilities/default.json`: a webview that could open a
-        // native dialog could also open one that looks like this application asking a
-        // question, and nothing in the panel has a question to ask.
+        // called from Rust, on the engine's own thread, and no webview is granted any dialog
+        // permission: a webview that could open a native dialog could also open one that
+        // looks like this application asking a question, and nothing in the panel or the
+        // settings window has a question to ask.
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |app| {
-            tray::create(app, &strings)?;
+        // Start with Windows. Registered with the application rather than exposed to a
+        // webview: `capabilities/settings.json` grants the settings window none of this
+        // plugin's permissions, because the switch is applied from the listener below.
+        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            settings::commands::get_strings,
+            settings::commands::get_settings,
+            settings::commands::set_settings,
+            settings::commands::list_input_devices,
+            settings::commands::engine_status,
+            settings::commands::rerun_probe,
+            settings::commands::capture_hotkey,
+            settings::commands::open_models_dir,
+            settings::commands::close_settings,
+        ])
+        .setup(|app| {
+            // One settings document for the whole process, read once. Every value the
+            // application used to hold as a constant comes out of here.
+            let store = match Settings::path(app.handle()) {
+                Ok(path) => SettingsStore::open(path),
+                Err(error) => {
+                    // No configuration directory means no file to read or write. The
+                    // application still runs, on the defaults, and says so.
+                    log::error!("no configuration directory, so the defaults are in use: {error}");
+                    SettingsStore::new(None, Settings::default())
+                }
+            };
+            match store.path() {
+                Some(path) => log::info!("settings file: {}", path.display()),
+                None => log::warn!("the settings are not being written anywhere"),
+            }
+            let settings = store.get();
+
+            // One language decision for the whole process, and one chord for every tooltip.
+            // Both are replaceable, because both are settings: the tray menu, the dialogs and
+            // the settings window all read the same catalogue, so they cannot end up in two
+            // different languages the way nazar-tray's did between its WP4 and WP5.
+            let strings = Arc::new(RwLock::new(Arc::new(Strings::for_setting(
+                settings.ui.language.tag(),
+            ))));
+            let hotkey = Arc::new(RwLock::new(settings.hotkey.chord.clone()));
+
+            {
+                let catalogue = strings.read().expect("a fresh catalogue is uncontended");
+                tray::create(app, catalogue.as_ref(), &settings.hotkey.chord)?;
+            }
 
             // One handle on the tray and the panel, shared by every background thread. It
             // also carries the resting state, which is why it is built before the engine:
             // the engine is what changes the answer to "what does idle look like here".
-            let ui = Ui::new(app.handle().clone(), strings);
+            let ui = Ui::new(
+                app.handle().clone(),
+                Arc::clone(&strings),
+                Arc::clone(&hotkey),
+            );
+            app.manage(ui.clone());
+            app.manage(store.clone());
+
+            // What the settings file says is what the machine should be doing, so the two are
+            // reconciled once at start-up: a user who turned autostart on and then reinstalled
+            // the application would otherwise have a switch that says yes and a registry that
+            // says nothing.
+            apply_autostart(app.handle(), settings.ui.autostart);
 
             // The engine comes up on its own thread and may spend a long time doing it — a
             // consent dialog, a download, a cold Vulkan probe. Nothing below waits for it,
             // because a tray application that will not respond to its hotkey until a
             // gigabyte has arrived is one nobody would leave running.
-            let engine = engine::EngineClient::start(ui.clone(), &config);
+            let engine = engine::EngineClient::start(ui.clone(), store.clone());
             // Handed to the run loop below, which is the only thing that knows when the
-            // application is closing.
+            // application is closing, and to the settings window's engine group.
             app.manage(engine.clone());
+
+            // The four changes nobody else owns: the language, the chord the tooltip names,
+            // the autostart switch and the tier. The session owns the hook and the
+            // microphone, and the engine supervisor reads the strictness and the dictionary
+            // where it uses them.
+            let handle = app.handle().clone();
+            let listening_ui = ui.clone();
+            let listening_engine = engine.clone();
+            let tooltip_hotkey = Arc::clone(&hotkey);
+            store.on_change(move |change| {
+                if change.language {
+                    relanguage(&handle, &listening_ui, change.settings.ui.language);
+                }
+                if change.hotkey {
+                    match tooltip_hotkey.write() {
+                        Ok(mut label) => label.clone_from(&change.settings.hotkey.chord),
+                        Err(_) => log::warn!("the tooltip still names the previous chord"),
+                    }
+                    listening_ui.rest();
+                }
+                if change.autostart {
+                    apply_autostart(&handle, change.settings.ui.autostart);
+                }
+                if change.engine {
+                    listening_engine.retier();
+                }
+            });
 
             // The hook is installed last, so a failure has an icon to be reported next to —
             // and so the first state the user sees is the one the application is in.
-            session::start(ui, config, engine)?;
+            session::start(ui, store, engine)?;
+
+            // **Debug builds only.** There is no way to click a tray menu from a script, so
+            // this is how the settings window gets opened by one — a screenshot for a report,
+            // or a hand check that the window still lays out after a change. A release build
+            // does not contain the code that reads it.
+            #[cfg(debug_assertions)]
+            if std::env::var("DILE_OPEN_SETTINGS").is_ok_and(|value| value == "1") {
+                log::warn!("DILE_OPEN_SETTINGS is set: opening the settings window at start");
+                settings::window::open(app.handle());
+            }
+
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -110,4 +203,58 @@ fn main() {
                 app.state::<engine::EngineClient>().stop();
             }
         });
+}
+
+/// Put the interface into another language, everywhere it is already showing.
+///
+/// The tray menu is rebuilt, the tooltip is repainted, and the settings window — which is
+/// where the switch was flipped — gets its title back and re-reads the catalogue itself.
+fn relanguage(app: &tauri::AppHandle, ui: &Ui, language: settings::Language) {
+    let catalogue = Arc::new(Strings::for_setting(language.tag()));
+    log::info!("the interface language is now {}", catalogue.locale());
+
+    match ui.catalogue().write() {
+        Ok(mut held) => *held = Arc::clone(&catalogue),
+        Err(_) => {
+            log::error!("the catalogue could not be replaced; the language did not change");
+            return;
+        }
+    }
+
+    let handle = app.clone();
+    let repaint = ui.clone();
+    // Menus belong to the main thread. Called from it, this is a queued closure; called from
+    // anywhere else, it is the only way to touch one.
+    let queued = app.run_on_main_thread(move || {
+        tray::relabel(&handle, &catalogue);
+        settings::window::retitle(&handle, &catalogue.text("settings.title"));
+        repaint.rest();
+    });
+    if let Err(error) = queued {
+        log::warn!("the tray could not be put into the new language: {error}");
+    }
+}
+
+/// Write the start-with-Windows switch, and say what happened.
+///
+/// Never fatal. A registry value that will not write is a switch that did not take, and the
+/// honest place for that is the log — a dictation application that refused to start because
+/// it could not add itself to `Run` would be a worse product than one that did not autostart.
+fn apply_autostart(app: &tauri::AppHandle, wanted: bool) {
+    let manager = app.autolaunch();
+    match manager.is_enabled() {
+        Ok(current) if current == wanted => return,
+        Ok(_) => {}
+        Err(error) => log::warn!("the autostart entry could not be read: {error}"),
+    }
+
+    let written = if wanted {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    match written {
+        Ok(()) => log::info!("autostart is now {}", if wanted { "on" } else { "off" }),
+        Err(error) => log::error!("the autostart entry could not be written: {error}"),
+    }
 }

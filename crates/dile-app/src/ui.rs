@@ -15,7 +15,7 @@
 //! [`Ui::set_resting`] is how the engine changes the answer — so no caller has to remember
 //! which of five states "back to normal" means today.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, EventTarget, Manager};
@@ -23,7 +23,7 @@ use tauri::{AppHandle, Emitter, EventTarget, Manager};
 use crate::i18n::Strings;
 use crate::tray::{self, Status};
 
-/// The window the review panel lives in. Declared in `tauri.conf.json`, hidden until WP5.
+/// The window the review panel lives in. Declared in `tauri.conf.json`, hidden until WP5b.
 const PANEL_WINDOW: &str = "panel";
 
 /// One meter reading, on its way to the panel's level bar.
@@ -44,19 +44,31 @@ pub struct StatePayload {
 #[derive(Clone)]
 pub struct Ui {
     app: AppHandle,
-    strings: Arc<Strings>,
+    /// The catalogue, which WP5 made replaceable: the language is a setting now, and
+    /// changing it re-renders the tray rather than asking for a restart.
+    strings: Arc<RwLock<Arc<Strings>>>,
     /// Whether the panel window exists. Checked once, because the answer cannot change
     /// until WP5 creates windows at run time — and a `get_webview_window` per level event
     /// would be a hash lookup twenty times a second for an answer that is always the same.
     panel: bool,
     /// What the tray goes back to when nothing is happening. See the module documentation.
     resting: Arc<Mutex<Status>>,
+    /// The chord the tooltip names, as the settings spell it.
+    ///
+    /// Held here rather than read from the settings on every repaint: the tray is repainted
+    /// several times per dictation, and what it needs is one short string that changes once
+    /// in a blue moon.
+    hotkey: Arc<RwLock<String>>,
 }
 
 impl Ui {
     /// Take hold of the application, once, at start-up.
     #[must_use]
-    pub fn new(app: AppHandle, strings: Arc<Strings>) -> Self {
+    pub fn new(
+        app: AppHandle,
+        strings: Arc<RwLock<Arc<Strings>>>,
+        hotkey: Arc<RwLock<String>>,
+    ) -> Self {
         let panel = app.get_webview_window(PANEL_WINDOW).is_some();
         if !panel {
             // Not fatal, and not even unusual until WP5: the window is declared in
@@ -68,6 +80,7 @@ impl Ui {
             strings,
             panel,
             resting: Arc::new(Mutex::new(Status::Idle)),
+            hotkey,
         }
     }
 
@@ -79,14 +92,36 @@ impl Ui {
     }
 
     /// The catalogue, in the user's language.
+    ///
+    /// An `Arc` rather than a borrow because the catalogue can be replaced under a caller:
+    /// the language is a setting, and a reference handed out across a lock would be a
+    /// reference to the language the user just stopped using.
     #[must_use]
-    pub fn strings(&self) -> &Strings {
-        &self.strings
+    pub fn strings(&self) -> Arc<Strings> {
+        match self.strings.read() {
+            Ok(strings) => Arc::clone(&strings),
+            Err(_) => Arc::new(Strings::for_locale("en")),
+        }
+    }
+
+    /// The shared catalogue slot, for whoever changes the language.
+    #[must_use]
+    pub fn catalogue(&self) -> Arc<RwLock<Arc<Strings>>> {
+        Arc::clone(&self.strings)
+    }
+
+    /// The chord the tooltip names.
+    #[must_use]
+    pub fn hotkey(&self) -> String {
+        match self.hotkey.read() {
+            Ok(hotkey) => hotkey.clone(),
+            Err(_) => String::new(),
+        }
     }
 
     /// Show a state on the tray and tell the panel about it.
     pub fn show(&self, status: Status) {
-        tray::show(&self.app, &self.strings, status);
+        tray::show(&self.app, &self.strings(), &self.hotkey(), status);
         self.emit(
             EVENT_STATE,
             StatePayload {
