@@ -11,6 +11,44 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Added
 
+- **WP5a — settings: a file, a window, and nothing that needs a restart.** Everything
+  `docs/PROJECT.md` calls a setting is now something a person can change while Dile is
+  running: the chord, hold or toggle, the second key, the recording cap, the microphone, the
+  cleanup level, auto-transfer and its delay, the engine tier, the dictionary, the interface
+  language and start-with-Windows.
+  - **`settings.json`, beside `engine.json`.** Every field defaults, so a file written by an
+    older build loads and so does one from a newer build carrying fields this one has never
+    heard of — losing a dictionary to a downgrade is not an acceptable failure. A value out of
+    range is **clamped with a log line rather than rejected**, because a settings file that
+    refuses to load is a tray application that will not start. The write is a temporary file
+    and a rename: this file holds the dictionary.
+  - **Live apply, worked out by comparison.** The settings window sends the whole document on
+    every keystroke and the Rust side works out what actually moved, so a dictionary entry
+    never re-opens the microphone and a cleanup level never re-installs a global keyboard
+    hook. The hook and the microphone are replaced on the thread that owns them; the engine
+    reads the strictness and the dictionary at the moment it uses them, so a term typed while
+    the last sentence was being transcribed is in the next one's prompt; the tray menu is
+    rebuilt in the new language; the tier override is written into `engine.json` and the
+    engine restarts on it without probing again.
+  - **The dictionary is finally reachable.** It was implemented and measured in WP4 — the
+    prompt is what took word error from 0.379 to 0.261 and technical-term recall from 17/31 to
+    30/31 — and until now there was nowhere to type one. It is edited inline in a table:
+    canonical, variants, pinned, delete, add a row. Two entries claiming the same term are
+    refused where they were typed, under Turkish casing, so `Cron` and `cron` are one claim.
+  - **A chord you can write down and press.** `Ctrl+Alt+Space` is a string in the file and a
+    row of key caps in the window, and the Change button listens for ten seconds and takes
+    what you press. `Ctrl+Space` is refused with the reason, and so is a chord with no
+    modifier in it — a bare key as a global hotkey takes that key away from the whole machine.
+  - **720 × 520, a left rail, dark grey, and no npm.** One HTML file, one stylesheet, one
+    script; `frontendDist` still points at `ui/` as static assets. Every visible word is a
+    `data-i18n` key resolved from the same catalogue the tray reads, and the no-hard-coded-text
+    test now scans every document and script under `ui/`, not just the panel's markup.
+  - **Nine commands are the whole of the window's power.** Its capability grants `core:default`
+    and nothing else — no dialog, no shell, no filesystem, and none of the autostart plugin's
+    permissions even though the plugin is registered: the switch travels as a boolean in the
+    document and Rust writes the registry. The panel's capability is untouched.
+  - The interface language follows Windows when it is left on Automatic, and switching it
+    re-renders the tray, the menu and the window without a restart.
 - **WP3 — the engine, at arm's length.** Hold the hotkey, speak, let go, and cleaned Turkish
   text comes back. The engine runs in a process of its own and the tray links the wire rather
   than the runtime, so killing that process costs the dictation in flight and nothing else.
@@ -182,10 +220,10 @@ Nothing has been released. The work packages that get to a first release are in
 ### Known gaps
 
 **The last step.** The text is transcribed and cleaned and then written to the log, because
-the panel that should receive it is WP5's, and so is the paste that follows it. There are no
-settings either, so the dictionary is empty in every build — which means the accuracy feature
-this product exists for is implemented, measured and not yet reachable by anybody. The tier
-decision lives in its own small file until that settings file exists.
+the panel that should receive it is WP5b's, and so is the paste that follows it. The
+dictionary is no longer part of that gap: it has a settings window now, and a term typed into
+it reaches both the decoder's prompt and the cleanup. What is left is somewhere for the
+finished sentence to go.
 
 **Packaging.** The engine binary is found beside the application, which is where a build puts
 it; declaring it as a Tauri sidecar so that an installer carries it is WP7's, and until then

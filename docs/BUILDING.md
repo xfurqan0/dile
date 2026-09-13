@@ -35,10 +35,26 @@ cargo tauri build --debug --no-bundle
 Roughly three minutes cold, seconds warm. Nearly all of the cold time is
 `transcribe-cpp-sys` compiling `transcribe.cpp`; nothing else in the workspace is large.
 
-There is **no frontend build step and no npm.** `ui/` is static markup that `frontendDist`
-points at directly. WP5 writes the review panel in plain TypeScript with esbuild, the way
-nazar-tray does, and `frontendDist` moves to `ui/dist` then — when there is something to
-compile.
+There is **no frontend build step and no npm**, and WP5 did not change that. `ui/` is static
+markup that `frontendDist` points at directly:
+
+```text
+ui/index.html            the review panel's shell (WP5b fills it)
+ui/settings/index.html   the settings window
+ui/settings/settings.css
+ui/settings/settings.js
+```
+
+WP0 predicted that WP5 would write the panel in TypeScript with esbuild, the way nazar-tray
+does, and move `frontendDist` to `ui/dist`. It did not: the settings window is one document,
+one stylesheet and one script with no imports and no framework, and a bundler for that would
+be a lockfile, an `npm ci` and two minutes of runner time for output identical to its input.
+The decision is open again when there is something that actually needs compiling.
+
+Every visible word in those files is a `data-i18n` attribute resolved at run time from
+`locales/<lang>.json` — the same catalogue the Rust side reads, handed over by the
+`get_strings` command. `crates/dile-app/tests/i18n.rs` reads every `.html` and `.js` under
+`ui/` and fails the build on a literal that reads like a sentence.
 
 ## Trying the capture path
 
@@ -267,6 +283,8 @@ contain the code that reads them.**
 | `DILE_ASSUME_CONSENT=1` | answers *yes* to the model-download dialog instead of showing it |
 | `DILE_MODEL_DIR` | reads and writes models here instead of in the application's local data directory |
 | `DILE_FORCE_PROBE_FAIL=1` | makes the first-run GPU probe fail, so the CPU fallback tier can be exercised on a machine whose GPU works |
+| `DILE_OPEN_SETTINGS=1` | opens the settings window at start-up, because nothing can click a tray menu from a script |
+| `DILE_OPEN_SETTINGS=<group>` | the same, on a chosen group: `hotkey`, `cleanup`, `engine`, `dictionary` or `general` |
 
 `DILE_MODEL_DIR` is how a machine that already holds these weights avoids downloading a
 second copy. The tier decision lives in `%APPDATA%\io.github.xfurqan0.dile\engine.json`;
