@@ -33,25 +33,26 @@
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
-    <svg aria-hidden="true" class="defs">
-      <symbol id="mark" viewBox="0 0 64 64">
-        <rect width="64" height="64" rx="14" fill="#1c1f24" />
-        <g fill="#eceef2">
-          <rect x="9" y="27" width="4" height="10" rx="2" />
-          <rect x="16" y="23" width="4" height="18" rx="2" />
-          <rect x="23" y="17" width="4" height="30" rx="2" />
-          <rect x="37" y="17" width="4" height="30" rx="2" />
-          <rect x="44" y="23" width="4" height="18" rx="2" />
-          <rect x="51" y="27" width="4" height="10" rx="2" />
-        </g>
-        <rect x="30" y="13" width="4" height="38" rx="2" fill="currentColor" />
-      </symbol>
-    </svg>
-
     <main id="card" class="card" data-state="idle" aria-live="polite">
       <div class="row" id="row">
+        <!--
+          The product's waveform mark, drawn here rather than referenced from a <symbol>:
+          it appears once, so a sprite buys nothing, and a <use> that silently resolves to
+          nothing is a blank space nobody can debug from a screenshot. The accent bar in the
+          middle is `currentColor`, which panel.css turns green, red or amber — the state
+          lives in one stroke, exactly where the tray icon already puts it.
+        -->
         <svg class="mark" id="mark" viewBox="0 0 64 64" role="img" aria-labelledby="title">
-          <use href="#mark" />
+          <rect width="64" height="64" rx="14" fill="#1c1f24" />
+          <g fill="#eceef2">
+            <rect x="9" y="27" width="4" height="10" rx="2" />
+            <rect x="16" y="23" width="4" height="18" rx="2" />
+            <rect x="23" y="17" width="4" height="30" rx="2" />
+            <rect x="37" y="17" width="4" height="30" rx="2" />
+            <rect x="44" y="23" width="4" height="18" rx="2" />
+            <rect x="51" y="27" width="4" height="10" rx="2" />
+          </g>
+          <rect x="30" y="13" width="4" height="38" rx="2" fill="currentColor" />
         </svg>
 
         <div class="stack grow" id="stack">
@@ -79,7 +80,7 @@
         <span class="num" id="elapsed"></span>
         <span class="target" id="target" hidden></span>
 
-        <button class="action cancel" id="cancel-live" type="button" hidden></button>
+        <button class="action cancel" id="cancel-live" type="button" data-i18n="panel.action.cancel" hidden></button>
       </div>
 
       <div class="foot" id="foot" hidden>

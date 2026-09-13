@@ -164,6 +164,18 @@ impl Paster {
         })
     }
 
+    /// What the clipboard holds as text right now.
+    ///
+    /// **Test builds only.** The hand test below reads the clipboard twice — before a paste
+    /// and after it — because "the previous clipboard is restored" is a claim about the
+    /// machine rather than about this code, and the only way to check a claim about the
+    /// machine is to ask the machine.
+    #[cfg(test)]
+    #[must_use]
+    pub fn peek(&self) -> Option<String> {
+        self.clipboard.text()
+    }
+
     /// Put text on the clipboard and leave it there.
     ///
     /// The panel's copy button. No delayed render, no receipt, and **no restore**.
@@ -236,7 +248,7 @@ impl Paster {
 
 #[cfg(test)]
 mod tests {
-    use super::{FRIENDLY_NAMES, SHIFT_PASTE, label_for, stem_of, wants_shift};
+    use super::{FRIENDLY_NAMES, Outcome, Paster, SHIFT_PASTE, label_for, stem_of, wants_shift};
     use std::path::Path;
 
     #[test]
@@ -297,6 +309,101 @@ mod tests {
                 "{exe} has a special chord and no name"
             );
         }
+    }
+
+    /// The whole paste path, against a real window, on a real clipboard.
+    ///
+    /// `#[ignore]` for two reasons, both of them about other people: it takes the machine's
+    /// clipboard for a second, and it opens and closes a Notepad on whoever's desktop is
+    /// running it. Neither is acceptable in a suite that runs on every commit, and neither is
+    /// a reason for the check not to exist — this is the only test in the repository that
+    /// proves a dictation actually arrives somewhere. Run it by hand:
+    ///
+    /// ```text
+    /// cargo test -p dile-app --bin dile-app -- --ignored --nocapture notepad
+    /// ```
+    ///
+    /// **The window is found by asking who is in front, not by the process that was
+    /// started.** On Windows 11 `notepad.exe` is a stub that hands off to a packaged
+    /// application, so enumerating the spawned pid's windows finds nothing at all — which is
+    /// exactly the shape of problem this whole module exists to get right, and it is fitting
+    /// that the test hit it first.
+    #[test]
+    #[ignore = "spawns Notepad and takes the machine's clipboard"]
+    fn a_dictation_pasted_into_notepad_arrives_and_the_clipboard_comes_back() {
+        use crate::win32::{Hwnd, window};
+        use std::time::{Duration, Instant};
+
+        let paster = Paster::start().expect("the clipboard agent starts");
+        paster
+            .copy("dile onceki pano")
+            .expect("something to restore");
+        assert_eq!(paster.peek().as_deref(), Some("dile onceki pano"));
+
+        let mut stub = std::process::Command::new("notepad.exe")
+            .spawn()
+            .expect("notepad starts");
+
+        // Its window, when it has one and has come to the front. Spawning is not showing, and
+        // a paste sent at a window that does not exist yet is the race this wait loses on
+        // purpose.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut found = None;
+        while Instant::now() < deadline && found.is_none() {
+            found = Hwnd::foreground()
+                .map(|front| (front, front.process_path().unwrap_or_default()))
+                .filter(|(_, exe)| stem_of(exe) == "notepad");
+            if found.is_none() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        let Some((target, exe)) = found else {
+            let _ = stub.kill();
+            panic!("notepad never came to the front");
+        };
+        println!("target: {} hwnd {:#x}", exe.display(), target.as_isize());
+        let owner = window::process_id(target);
+        // Long enough for the editor inside it to take the caret.
+        std::thread::sleep(Duration::from_millis(1_500));
+
+        let outcome = paster.transfer(target, &exe, "dile test");
+        std::thread::sleep(Duration::from_millis(800));
+
+        // The clipboard first, because reading the text back is going to overwrite it: the
+        // only way to ask a XAML editor what it holds is to select it and copy it, the way a
+        // person would. `text_of` is tried first anyway, because a classic edit control
+        // answers directly and this test should keep working against one.
+        let restored = paster.peek();
+        let mut arrived = window::text_of(target);
+        if !arrived.contains("dile test") {
+            assert!(window::send_select_all_and_copy(), "the read-back chord");
+            std::thread::sleep(Duration::from_millis(600));
+            arrived = paster.peek().unwrap_or_default();
+        }
+
+        let _ = stub.kill();
+        let _ = stub.wait();
+        if let Some(owner) = owner {
+            // By pid, and only by pid.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &owner.to_string(), "/T", "/F"])
+                .output();
+        }
+
+        println!("outcome: {outcome:?}");
+        println!("notepad said: {arrived:?}");
+        println!("clipboard after: {restored:?}");
+
+        assert_eq!(outcome, Outcome::Pasted, "the target never took the text");
+        assert!(
+            arrived.contains("dile test"),
+            "notepad shows {arrived:?}, which does not contain the dictation"
+        );
+        assert_eq!(
+            restored.as_deref(),
+            Some("dile onceki pano"),
+            "the clipboard was not put back"
+        );
     }
 
     #[test]

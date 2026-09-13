@@ -161,6 +161,19 @@ struct Held {
     /// display's own corner: a screen that moves in the arrangement takes its panel with it.
     monitor: Option<Monitor>,
     dragged: Option<PanelPosition>,
+    /// Where this application last put the window itself.
+    ///
+    /// Windows reports a programmatic move through the same event as a dragged one, and it
+    /// reports it *after* the call returns — so without this the panel would "remember" its
+    /// own placement as a preference the first time it was ever shown, and the settings file
+    /// would fill up with positions nobody chose.
+    placed: Option<PanelPosition>,
+    /// Whether this card is a debug preview rather than a dictation.
+    ///
+    /// Set by `DILE_OPEN_PANEL` and by nothing else. It switches the countdown off, because a
+    /// preview that transferred itself after a second and a half would be a preview nobody
+    /// could photograph — which is exactly what happened the first time one was tried.
+    preview: bool,
 }
 
 /// The review panel.
@@ -287,6 +300,17 @@ impl Panel {
             held.strictness = self.store.get().strictness();
         }
         self.show();
+        // The page is told the panel is live before any state arrives. Without it the first
+        // `dile://state` of a dictation would land on a page that still believes it is
+        // closed — and the resting state is emitted often enough that "open when a state
+        // arrives" is not a rule the page can use instead.
+        self.ui.emit(
+            EVENT_PANEL,
+            PanelPayload {
+                mode: "live",
+                hotkey: String::new(),
+            },
+        );
     }
 
     /// Put a finished dictation on screen.
@@ -520,13 +544,15 @@ impl Panel {
         let held = self.held.lock().ok();
         Context {
             hotkey: settings.hotkey.chord.clone(),
-            auto_transfer: settings.cleanup.auto_transfer,
+            auto_transfer: settings.cleanup.auto_transfer
+                && !held.as_ref().is_some_and(|held| held.preview),
             auto_transfer_ms: settings.cleanup.auto_transfer_ms,
             cap_ms: settings.cap_ms(),
             strictness: held
                 .as_ref()
                 .map_or(Strictness::Medium, |held| held.strictness)
                 .as_str(),
+            preview: held.as_ref().is_some_and(|held| held.preview),
             target_label: held
                 .and_then(|held| held.target.as_ref().map(|target| target.label.clone())),
         }
@@ -636,6 +662,7 @@ impl Panel {
         if let Ok(mut held) = self.held.lock() {
             held.monitor = Some(monitor.clone());
             held.dragged = None;
+            held.placed = Some(position);
         }
         if let Err(error) = window.set_position(PhysicalPosition::new(position.x, position.y)) {
             log::warn!("the panel could not be placed: {error}");
@@ -644,8 +671,11 @@ impl Panel {
 
     /// The user dragged the card. Remember where to, for this monitor.
     fn remember(&self, x: i32, y: i32) {
-        if let Ok(mut held) = self.held.lock() {
-            held.dragged = Some(PanelPosition { x, y });
+        let moved = PanelPosition { x, y };
+        if let Ok(mut held) = self.held.lock()
+            && held.placed != Some(moved)
+        {
+            held.dragged = Some(moved);
         }
     }
 
@@ -777,7 +807,7 @@ pub struct ResultPayload {
 /// The payload of [`EVENT_PANEL`].
 #[derive(Clone, Debug, Serialize)]
 pub struct PanelPayload {
-    /// `idle`, `closed` or `target-gone`.
+    /// `live`, `idle`, `closed` or `target-gone`.
     pub mode: &'static str,
     /// The chord the idle hint names. Empty for every other mode.
     pub hotkey: String,
@@ -798,6 +828,12 @@ pub struct Context {
     pub strictness: &'static str,
     /// The friendly name of the window the current dictation is aimed at.
     pub target_label: Option<String>,
+    /// Whether this card is a debug preview rather than a dictation.
+    ///
+    /// A preview does not count down and does not close itself: both would make a state
+    /// impossible to photograph, which is the only thing a preview is for. Always `false` in
+    /// a release build, where nothing can set it.
+    pub preview: bool,
 }
 
 /// How long the debug switch leaves a state on screen before the process is killed by hand.
@@ -814,9 +850,35 @@ const DEBUG_SAMPLE_RAW: &str = "eee kubernetes cluster'ını bugün kurdum webho
 /// one it was helping to find.
 #[cfg(debug_assertions)]
 pub fn debug_open(panel: &Arc<Panel>, what: &str) {
+    let panel = Arc::clone(panel);
+    let what = what.to_owned();
+    // **After the webview has loaded.** Every one of these states is an event, and an event
+    // emitted during `setup` is emitted at a page that has not finished parsing its own
+    // script yet — which is an empty card and half an hour of wondering why. A debug switch
+    // is allowed to solve that with a sleep; nothing in the product path does.
+    let spawned = std::thread::Builder::new()
+        .name("dile-debug-panel".to_owned())
+        .spawn(move || {
+            std::thread::sleep(DEBUG_PAGE_LOAD);
+            debug_render(&panel, &what);
+        });
+    if let Err(error) = spawned {
+        log::error!("the debug panel could not be opened: {error}");
+    }
+}
+
+/// How long the debug switch waits for the panel's page to be ready for an event.
+#[cfg(debug_assertions)]
+const DEBUG_PAGE_LOAD: std::time::Duration = std::time::Duration::from_millis(1_200);
+
+#[cfg(debug_assertions)]
+fn debug_render(panel: &Arc<Panel>, what: &str) {
     use crate::tray::Status;
 
     log::warn!("DILE_OPEN_PANEL={what}: rendering a sample state");
+    if let Ok(mut held) = panel.held.lock() {
+        held.preview = true;
+    }
     match what {
         "recording" => {
             panel.begin();
@@ -824,10 +886,15 @@ pub fn debug_open(panel: &Arc<Panel>, what: &str) {
         }
         "working" => {
             panel.begin();
+            // Through the recording state, because that is the only way to reach this one: a
+            // preview that jumped straight to "working" would be testing a transition the
+            // product does not have.
+            panel.ui.show(Status::Recording);
             panel.ui.show(Status::Working);
         }
         "nothing" => {
             panel.begin();
+            panel.ui.show(Status::Recording);
             panel.ui.show(Status::NothingHeard);
         }
         "result" => {

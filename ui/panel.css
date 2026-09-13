@@ -58,13 +58,6 @@ body {
   display: none !important;
 }
 
-/* The symbol definitions, which are never drawn where they are declared. */
-.defs {
-  position: absolute;
-  width: 0;
-  height: 0;
-}
-
 /* ---------------------------------------------------------------------------- the card */
 
 .card {

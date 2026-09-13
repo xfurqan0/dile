@@ -357,17 +357,22 @@ fn rect(from: windows::Win32::Foundation::RECT) -> Rect {
 /// Windows says they are actually down — a synthetic key-up for a key nobody is holding is a
 /// stray event in somebody else's application.
 pub fn send_paste_chord(with_shift: bool) -> bool {
+    send_chord(with_shift, VK_V)
+}
+
+/// Send `Ctrl+key`, or `Ctrl+Shift+key`, to whatever has the focus.
+fn send_chord(with_shift: bool, key: VIRTUAL_KEY) -> bool {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(10);
 
-    for key in [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN] {
-        if is_down(key) {
-            inputs.push(key_event(key, true));
+    for held in [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN] {
+        if is_down(held) {
+            inputs.push(key_event(held, true));
         }
     }
     if !with_shift {
-        for key in [VK_LSHIFT, VK_RSHIFT] {
-            if is_down(key) {
-                inputs.push(key_event(key, true));
+        for held in [VK_LSHIFT, VK_RSHIFT] {
+            if is_down(held) {
+                inputs.push(key_event(held, true));
             }
         }
     }
@@ -376,8 +381,8 @@ pub fn send_paste_chord(with_shift: bool) -> bool {
     if with_shift {
         inputs.push(key_event(VK_SHIFT, false));
     }
-    inputs.push(key_event(VK_V, false));
-    inputs.push(key_event(VK_V, true));
+    inputs.push(key_event(key, false));
+    inputs.push(key_event(key, true));
     if with_shift {
         inputs.push(key_event(VK_SHIFT, true));
     }
@@ -422,6 +427,105 @@ fn key_event(key: VIRTUAL_KEY, up: bool) -> INPUT {
             },
         },
     }
+}
+
+/// Select everything in the focused window and copy it.
+///
+/// **Test builds only.** The hand test in `paste.rs` needs to read back what actually landed
+/// in Notepad, and Windows 11's Notepad has no window to ask: its editor is a XAML control,
+/// so `WM_GETTEXT` finds a helper window's caption and nothing else. `Ctrl+A` then `Ctrl+C` is
+/// how a person would check, and it is the only check that works against every editor rather
+/// than against the ones that still use a classic control.
+#[cfg(test)]
+pub fn send_select_all_and_copy() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_A, VK_C};
+
+    send_chord(false, VK_A) && send_chord(false, VK_C)
+}
+
+/// The process this window belongs to.
+///
+/// **Test builds only.** The hand test in `paste.rs` needs it because a window's process is
+/// not always the process that was started: on Windows 11 `notepad.exe` is a stub that hands
+/// off to a packaged application, so the window that appears belongs to a pid nobody was
+/// told about — and the only honest way to close it afterwards is to ask the window.
+#[cfg(test)]
+#[must_use]
+pub fn process_id(window: Hwnd) -> Option<u32> {
+    let mut owner = 0u32;
+    // SAFETY: a live local for the length of the call.
+    let thread = unsafe { GetWindowThreadProcessId(window.raw(), Some(&mut owner)) };
+    (thread != 0 && owner != 0).then_some(owner)
+}
+
+/// The text this window and its children report through `WM_GETTEXT`.
+///
+/// **Test builds only**, and for the same reason as [`process_id`]: the hand test in
+/// `paste.rs` has to find out whether a paste actually landed, and the only program that
+/// knows is the one it landed in. A classic edit control answers directly; a window whose
+/// editor is a XAML control answers with a helper window's caption, which is why the test
+/// treats an answer without the dictation in it as "ask another way" rather than as a
+/// failure.
+#[cfg(test)]
+#[must_use]
+pub fn text_of(window: Hwnd) -> String {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, SendMessageW, WM_GETTEXT, WM_GETTEXTLENGTH,
+    };
+    use windows::core::BOOL;
+
+    fn read(window: HWND) -> String {
+        // SAFETY: `WM_GETTEXTLENGTH` takes no pointers and answers with a count.
+        let length = unsafe { SendMessageW(window, WM_GETTEXTLENGTH, None, None) }.0;
+        let Ok(length) = usize::try_from(length) else {
+            return String::new();
+        };
+        if length == 0 {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; length + 1];
+        // SAFETY: the buffer holds `length + 1` units and that is exactly what `wParam`
+        // promises the receiver, which is the contract `WM_GETTEXT` is defined by.
+        let written = unsafe {
+            SendMessageW(
+                window,
+                WM_GETTEXT,
+                Some(WPARAM(buffer.len())),
+                Some(LPARAM(buffer.as_mut_ptr() as isize)),
+            )
+        }
+        .0;
+        let written = usize::try_from(written).unwrap_or(0).min(length);
+        String::from_utf16_lossy(&buffer[..written])
+    }
+
+    unsafe extern "system" fn collect(child: HWND, into: LPARAM) -> BOOL {
+        // SAFETY: as in `windows_of` — the address of a local that outlives the enumeration.
+        let found = unsafe { &mut *(into.0 as *mut Vec<String>) };
+        let text = read(child);
+        if !text.is_empty() {
+            found.push(text);
+        }
+        BOOL(1)
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    // SAFETY: as in `windows_of`.
+    let _ = unsafe {
+        EnumChildWindows(
+            Some(window.raw()),
+            Some(collect),
+            LPARAM(std::ptr::from_mut(&mut found) as isize),
+        )
+    };
+    if found.is_empty() {
+        return read(window.raw());
+    }
+    found.join(
+        "
+",
+    )
 }
 
 #[cfg(test)]

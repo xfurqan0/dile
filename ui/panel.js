@@ -60,6 +60,7 @@ let context = {
   cap_ms: 60000,
   strictness: "medium",
   target_label: null,
+  preview: false,
 };
 
 let mode = "closed";
@@ -217,7 +218,15 @@ function notice(titleKey, hintKey, state) {
 function renderIdle(hotkey) {
   notice("panel.hint.idle", null, "idle");
   title.textContent = t("panel.hint.idle", { hotkey: hotkey || context.hotkey });
-  closeTimer = setTimeout(() => invoke("panel_close"), HINT_MS);
+  closeLater(HINT_MS);
+}
+
+/** Close the panel after a moment, unless this card is a preview somebody is looking at. */
+function closeLater(delay) {
+  if (context.preview) {
+    return;
+  }
+  closeTimer = setTimeout(() => invoke("panel_close"), delay);
 }
 
 function renderRecording() {
@@ -241,8 +250,10 @@ function renderWorking() {
   title.textContent = t("panel.state.processing");
   sub.hidden = false;
   sub.textContent = t("panel.processing.detail", {
-    model: engine.model || t("settings.engine.model"),
-    tier: engine.tier || t("settings.engine.tier"),
+    // An em dash rather than a label: until the engine has said which model it loaded there
+    // is nothing honest to put here, and a word that means "unknown" would be read as one.
+    model: engine.model || "—",
+    tier: engine.tier || "—",
     audio: seconds(audioMs),
   });
   workingSince = performance.now();
@@ -405,11 +416,14 @@ function onState(payload) {
   if (mode === "closed" || mode === "result" || mode === "gone") {
     return;
   }
+  // "live" is the panel saying it is open before any state has arrived; everything below is
+  // a state that only means something once it is.
+
   if (state === "working") {
     renderWorking();
   } else if (state === "nothing-heard") {
     notice("panel.state.nothing", null, "stalled");
-    closeTimer = setTimeout(() => invoke("panel_close"), NOTHING_MS);
+    closeLater(NOTHING_MS);
   } else if (state === "no-microphone") {
     notice("panel.state.nomicrophone", null, "stalled");
   } else if (state === "no-model") {
@@ -442,7 +456,12 @@ function onEngine(payload) {
 }
 
 function onPanel(payload) {
-  if (payload.mode === "idle") {
+  if (payload.mode === "live") {
+    refresh();
+    if (mode === "closed") {
+      mode = "live";
+    }
+  } else if (payload.mode === "idle") {
     refresh().then(() => renderIdle(payload.hotkey));
   } else if (payload.mode === "closed") {
     clearTimers();

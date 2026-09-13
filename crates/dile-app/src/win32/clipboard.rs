@@ -55,7 +55,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, SetLastError, WIN32_ERROR, WPARAM,
+};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner,
     IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
@@ -572,21 +574,44 @@ fn write_offer(
         utf16: utf16_of(text),
         signal,
     };
-    match shared.offer.lock() {
-        Ok(mut held) => *held = Some(offer),
-        Err(_) => return Err(ClipboardError::NotRunning),
-    }
 
     open(window)?;
     let written = (|| {
         // SAFETY: the clipboard is open on this thread, and emptying it makes this process
         // the owner — which is the whole point: only the owner is asked to render.
         unsafe { EmptyClipboard() }.map_err(|error| ClipboardError::Refused(error.to_string()))?;
+
+        // **After `EmptyClipboard`, and that is not a detail.** Emptying the clipboard sends
+        // WM_DESTROYCLIPBOARD to the *previous* owner, synchronously, on this thread — and
+        // when a second dictation follows a first, the previous owner is this process. The
+        // handler for that message drops the pending offer, which is right when somebody else
+        // took the clipboard and catastrophic one line too early: the promise would be
+        // installed and then immediately forgotten, so the paste that asked for it would be
+        // answered with nothing. Seen live on 2026-09-13, in exactly that shape.
+        match shared.offer.lock() {
+            Ok(mut held) => *held = Some(offer),
+            Err(_) => return Err(ClipboardError::NotRunning),
+        }
         // SAFETY: a null handle is the documented way to say "I will supply this format when
         // it is wanted". The promise is kept by the window procedure below.
-        unsafe { SetClipboardData(CF_UNICODETEXT, None) }
-            .map(|_| ())
-            .map_err(|error| ClipboardError::Refused(error.to_string()))
+        //
+        // **The last error has to be cleared first, and the reason is the whole trick.**
+        // `SetClipboardData` answers with the handle it was given, so an offer succeeds by
+        // returning *null* — which no wrapper can tell apart from a failure by the return
+        // value alone, so it asks Windows what went wrong. Windows has not been asked to
+        // record anything, and answers with whatever error some earlier call left lying
+        // about. Zeroing it first makes the question meaningful: a null return with a last
+        // error of zero is a promise that was accepted. Both halves were seen live on
+        // 2026-09-13, first as `0x00000000` and then, after only the second half existed, as
+        // `ERROR_INVALID_HANDLE` from a call that had in fact worked.
+        //
+        // SAFETY: `SetLastError` writes one thread-local value and cannot fail.
+        unsafe { SetLastError(WIN32_ERROR(0)) };
+        match unsafe { SetClipboardData(CF_UNICODETEXT, None) } {
+            Ok(_) => Ok(()),
+            Err(error) if error.code().is_ok() => Ok(()),
+            Err(error) => Err(ClipboardError::Refused(error.to_string())),
+        }
     })();
     close();
 
