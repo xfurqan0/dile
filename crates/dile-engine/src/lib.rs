@@ -26,23 +26,25 @@
 //!   this process; otherwise the caller drops to the CPU tier (`docs/PROJECT.md` §3).
 //!   Handy's open bug #1755 — a Vulkan auto-GPU path bug-checking an RTX 5090 — is why the
 //!   answer is a probe rather than an "Auto" setting.
-//! * **Greedy decoding, temperature 0, no prompt.** `transcribe-cpp` 0.2.3 exposes **no
-//!   beam-size knob** and the whisper family samples greedily; verified in its sources and
-//!   by running it (`docs/PROJECT.md`, log 2026-09-09). So the only decoder knobs that
-//!   exist are temperature and the prompt, and both are pinned: comparing candidates in M0
-//!   means comparing them under identical settings, and a dictation that changes its mind
-//!   between two runs of the same audio is a bug report nobody can act on.
+//! * **Greedy decoding, temperature 0.** `transcribe-cpp` 0.2.3 exposes **no beam-size
+//!   knob** and the whisper family samples greedily; verified in its sources and by running
+//!   it (`docs/PROJECT.md`, log 2026-09-09). So the only decoder knobs that exist are
+//!   temperature and the prompt. Temperature is pinned at 0, because a dictation that
+//!   changes its mind between two runs of the same audio is a bug report nobody can act on;
+//!   the **prompt is the one parameter**, because it is what the dictionary is fed through
+//!   and it is what moved accuracy the most in M0 — WER 0.379 → 0.261 and 17 → 30 of 31
+//!   technical terms.
 //! * **Segment timestamps only.** Word granularity returns *unsupported timestamp
 //!   granularity* from this runtime. Dictation does not need word times.
 //! * **16 kHz mono `f32`.** The buffer is what the capture stage (WP2) produces; this crate
 //!   opens no microphone and reads no file.
 //!
-//! ## What is not here yet
+//! ## Who links this
 //!
-//! Process isolation (WP3) is the reason this crate is separate from the app: the engine
-//! runs in its own process so that a driver crash takes the engine down and not the tray.
-//! WP0 links it into the workspace and proves it loads a model and transcribes; nothing in
-//! `dile-app` calls it yet.
+//! **`dile-engine-host` and nothing else.** Process isolation (WP3) is the reason this crate
+//! is separate from the application: the engine runs in its own process so that a driver
+//! fault takes the engine down and not the tray. The tray talks to that process over
+//! `dile-engine-proto`, and `dile-app` has no dependency on this crate at all.
 
 #![forbid(unsafe_code)]
 
@@ -51,7 +53,8 @@ use std::path::Path;
 use std::sync::Once;
 
 use transcribe_cpp::{
-    Backend, ModelOptions, RunExtension, RunOptions, TimestampKind, WhisperRunOptions,
+    Backend, ModelOptions, RunExtension, RunOptions, SessionOptions, TimestampKind,
+    WhisperRunOptions,
 };
 
 /// The sample rate every buffer this crate accepts must be at.
@@ -208,10 +211,27 @@ impl Model {
         self.inner.backend()
     }
 
-    /// Open a session on this model.
+    /// Open a session on this model with the runtime's own thread policy.
     pub fn engine(&self) -> Result<Engine, Error> {
+        self.engine_with_threads(0)
+    }
+
+    /// Open a session on this model, choosing how many CPU threads it may use.
+    ///
+    /// `0` leaves the decision to the runtime, which is the right answer on the Vulkan tier
+    /// — almost nothing runs on the CPU there. It is a knob at all because the CPU fallback
+    /// tier is the one place where the number matters, and because the engine host takes it
+    /// from the wire rather than deciding for itself.
+    pub fn engine_with_threads(&self, threads: u32) -> Result<Engine, Error> {
+        let options = SessionOptions {
+            // Saturating rather than wrapping: a thread count that arrived as nonsense
+            // becomes "as many as this platform can express", never a negative that the
+            // native side would read as something else entirely.
+            n_threads: i32::try_from(threads).unwrap_or(i32::MAX),
+            ..SessionOptions::default()
+        };
         Ok(Engine {
-            session: self.inner.session()?,
+            session: self.inner.session_with(&options)?,
         })
     }
 }
@@ -223,16 +243,32 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Transcribe one 16 kHz mono buffer of `f32` samples in `language`.
+    /// Transcribe one 16 kHz mono buffer of `f32` samples in `language`, with no prompt.
     ///
     /// `language` is an ISO code — `"tr"`, `"en"` — and is always given rather than left to
     /// autodetection: Dile knows which language it is set to, and a hint costs nothing.
     pub fn transcribe(&mut self, pcm: &[f32], language: &str) -> Result<Transcript, Error> {
+        self.transcribe_with(pcm, language, None)
+    }
+
+    /// Transcribe one buffer with an initial prompt in front of the decoder.
+    ///
+    /// The prompt is how the user's dictionary reaches the model (`docs/PROJECT.md` §3, v1
+    /// model), and an empty one is passed as `None` rather than as an empty string: whisper
+    /// conditions on whatever it is given, and an empty prompt is not the same thing as no
+    /// prompt.
+    pub fn transcribe_with(
+        &mut self,
+        pcm: &[f32],
+        language: &str,
+        prompt: Option<&str>,
+    ) -> Result<Transcript, Error> {
         if pcm.is_empty() {
             return Err(Error::EmptyAudio);
         }
 
-        let result = self.session.run(pcm, &run_options(language))?;
+        let prompt = prompt.filter(|text| !text.trim().is_empty());
+        let result = self.session.run(pcm, &run_options(language, prompt))?;
         Ok(Transcript {
             text: result.text.trim().to_string(),
             segments: result
@@ -251,15 +287,15 @@ impl Engine {
 
 /// The decoder settings, in one place because M0 compares candidates under identical ones.
 ///
-/// Temperature 0 with no initial prompt is the parity baseline of `docs/PROJECT.md` WP1.
-/// Beam size is absent because this runtime has none. The dictionary prompt (WP4) becomes a
-/// parameter here, measured with and without.
-fn run_options(language: &str) -> RunOptions {
+/// Temperature 0 is the parity baseline of `docs/PROJECT.md` WP1 and beam size is absent
+/// because this runtime has none, which leaves the prompt as the only thing a caller
+/// decides — and the only thing M0 measured a difference from.
+fn run_options(language: &str, prompt: Option<&str>) -> RunOptions {
     RunOptions {
         language: Some(language.to_string()),
         timestamps: TimestampKind::Segment,
         family: Some(RunExtension::Whisper(WhisperRunOptions {
-            initial_prompt: None,
+            initial_prompt: prompt.map(str::to_string),
             temperature: Some(0.0),
             ..Default::default()
         })),
@@ -292,7 +328,7 @@ mod tests {
 
     #[test]
     fn the_decoder_settings_are_the_m0_parity_baseline() {
-        let options = run_options("tr");
+        let options = run_options("tr", None);
         assert_eq!(options.language.as_deref(), Some("tr"));
         assert_eq!(options.timestamps, TimestampKind::Segment);
 
@@ -300,11 +336,20 @@ mod tests {
             panic!("the whisper decode knobs must be set explicitly, not left to defaults");
         };
         assert_eq!(whisper.temperature, Some(0.0));
-        assert_eq!(
-            whisper.initial_prompt, None,
-            "WP4 adds the dictionary prompt, not WP0"
-        );
+        assert_eq!(whisper.initial_prompt, None);
 
         assert_eq!(SAMPLE_RATE, 16_000);
+    }
+
+    #[test]
+    fn the_prompt_is_the_one_decoder_knob_a_caller_sets() {
+        let prompted = run_options("tr", Some("cron, SSH, Tauri."));
+        let Some(RunExtension::Whisper(whisper)) = prompted.family else {
+            panic!("the whisper extension carries the prompt");
+        };
+        assert_eq!(whisper.initial_prompt.as_deref(), Some("cron, SSH, Tauri."));
+        // Everything else is still the baseline: a prompt must not quietly move a threshold.
+        assert_eq!(whisper.temperature, Some(0.0));
+        assert_eq!(whisper.condition_on_prev_tokens, None);
     }
 }
