@@ -1,0 +1,23 @@
+[package]
+name = "dile-engine-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The framing and the messages Dile's application and engine process speak."
+
+[lints.rust]
+missing_docs = "warn"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+
+# Deliberately nothing else, and in particular **not** `transcribe-cpp`. This crate is the
+# one definition of the wire both sides read, so it is linked into the application as well
+# as into the engine host; a dependency on the runtime here would drag the native library
+# back into the tray process and undo the process boundary WP3 exists to build.

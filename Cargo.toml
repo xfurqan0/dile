@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/dile-core", "crates/dile-engine", "crates/dile-hotkey", "crates/dile-capture", "crates/dile-app"]
+members = [
+    "crates/dile-core",
+    "crates/dile-engine",
+    "crates/dile-engine-proto",
+    "crates/dile-engine-host",
+    "crates/dile-hotkey",
+    "crates/dile-capture",
+    "crates/dile-app",
+]
 resolver = "3"
 
 [workspace.package]
