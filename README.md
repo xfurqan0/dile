@@ -4,7 +4,7 @@
 
 **Hold a key. Speak. Let go.** Local, Turkish-first dictation. What you said appears in a small panel for a moment, then lands in whatever you're typing in. Fix a word, copy it, or cancel before it does.
 
-> Status: **pre-alpha, it records.** The workspace, the tray shell and CI are in place, and holding the hotkey now captures: the chord is swallowed, the microphone opens, the first syllable is kept and the tray says what is happening. Nothing transcribes yet, nothing pastes, and there is nothing to install. See [docs/PROJECT.md](docs/PROJECT.md) for the v1 spec and the work packages.
+> Status: **pre-alpha, it transcribes.** Hold the hotkey, speak, let go, and cleaned Turkish comes back: the chord is swallowed, the microphone opens, the first syllable is kept, and the recording goes to an engine in a process of its own — which downloads its model on first run, with your consent, and decides on that run whether this machine's GPU can be trusted with it. What is missing is the last step: the text goes to the log rather than into a panel you can review and paste from, and there is nothing to install yet. See [docs/PROJECT.md](docs/PROJECT.md) for the v1 spec and the work packages.
 
 ## Why another dictation app
 
@@ -13,7 +13,7 @@ There are excellent local dictation tools (Handy, OpenWhispr). Dile exists for o
 - What Turkish actually comes back wrong is the terms and the punctuation, not the fillers: measured on Dile's own set, no supported engine writes a vocalised "eee" at all. So the answer v1 ships is a dictionary that works in both directions — fed to the recognizer before it decodes, and used to correct the spelling afterwards. The measurement is already done: on that set the dictionary took word error from 0.379 to 0.261 and technical-term recall from 17 to 30 out of 31, with no language model anywhere in the loop.
 - Dictionaries in other tools silently drop words with `ç ğ ı ö ş ü`. Dile's keeps them byte for byte — the round trip is tested letter by letter — so terms like `cron`, `token` and `cache` stop coming back as whatever Turkish word happened to fit the slot.
 - The model is chosen by measured Turkish accuracy on Dile's own test set, not by a model card — and it is chosen: **v1 ships stock Whisper large-v3** (`q5_0`, GGUF) with that dictionary prompt. No fine-tune, because no Turkish fine-tune has beaten the stock weights on our material yet.
-- Turkish `ı/İ` casing, the three cleanup strictness levels, deterministic punctuation repair and the hallucination-phrase filter are implemented and tested today, from a real 230-cut edit log. The cleanup runs no model and opens no socket: it is a fixed pipeline of rules, and every rule says in its own source which sentence of the spec it implements. What is still missing is the engine in front of it and the panel behind it.
+- Turkish `ı/İ` casing, the three cleanup strictness levels, deterministic punctuation repair and the hallucination-phrase filter are implemented and tested today, from a real 230-cut edit log. The cleanup runs no model and opens no socket: it is a fixed pipeline of rules, and every rule says in its own source which sentence of the spec it implements. What is still missing is the panel behind it.
 - **Vulkan by default** is the decided tier, chosen on first start by a probe that runs inside the isolated engine process; a machine where the probe fails gets the CPU tier and a small model instead. Either way the engine gets a process of its own, so a driver crash never takes the app down.
 
 English works too. Turkish just comes first.

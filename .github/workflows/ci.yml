@@ -46,12 +46,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # CPU features only. The `gpu-vulkan` feature is deliberately NOT built here: it needs
-      # the Vulkan SDK, which is a ~250 MB download and an installer on every run, for a
-      # feature that is opt-in at run time and that no test can exercise on a runner with no
-      # GPU. The maintainer builds it locally before every release — docs/BUILDING.md has the
-      # recipe, including the `LIB` variable the SDK installer does not set — and WP7 revisits
-      # this when the release workflow has to produce a GPU build.
+      # CPU features only, and that covers `dile-engine-host` as well as `dile-engine`: the
+      # `gpu-vulkan` feature is deliberately NOT built here, because it needs the Vulkan SDK
+      # — a ~250 MB download and an installer on every run — for a tier that a runner with no
+      # GPU could not exercise anyway. Every test that would need a GPU, a network or a real
+      # model is `#[ignore]`d; the resume test runs against a server it starts itself. The
+      # maintainer builds the GPU host locally before every release — docs/BUILDING.md has
+      # the recipe, including the `LIB` variable the SDK installer does not set — and WP7
+      # revisits this when the release workflow has to bundle one as a sidecar.
       - name: Test the workspace
         run: cargo test --workspace
 

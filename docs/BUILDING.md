@@ -113,10 +113,11 @@ appears. The numbers are the per-channel deltas from `#78D6A0` to `#E5484D` (rec
 
 ## Running the CI gate locally
 
-GitHub Actions cannot run on this repository at the moment — it is private and the free
-minutes are gone — so the gate has to run here, before a push leaves the machine.
-`scripts/ci-local.ps1` mirrors `.github/workflows/ci.yml`: the same steps, in the same order,
-with the same environment, and the `audit` job's `cargo deny check` on the end.
+GitHub Actions runs on every push now that the repository is public, and `scripts/ci-local.ps1`
+is what answers the same question before a push leaves the machine — a red run twelve minutes
+after the fact is a worse way to find a formatting error. It mirrors
+`.github/workflows/ci.yml`: the same steps, in the same order, with the same environment, and
+the `audit` job's `cargo deny check` on the end.
 
 ```powershell
 cargo install cargo-deny --locked    # once; tauri-cli is already in the prerequisites above
@@ -162,8 +163,14 @@ in the Tauri tree, say — and the wrong one the rest of the time.
 
 ```powershell
 $env:LIB = "$env:VULKAN_SDK\Lib;$env:LIB"
-cargo build -p dile-engine --features gpu-vulkan
+cargo build -p dile-engine-host --features gpu-vulkan
 ```
+
+**`dile-engine-host` is the binary that matters.** It is the only crate in this workspace
+that links the runtime; the application talks to it over a pipe and has no dependency on it
+at build time (`docs/PROJECT.md` §3, engine tiers). `cargo build -p dile-engine --features
+gpu-vulkan` compiles the same native library without the process around it, which is what
+that crate's own smoke test needs and nothing else.
 
 **`LIB=%VULKAN_SDK%\Lib;%LIB%` is required, and the Vulkan SDK installer does not set it.**
 Without it the link fails with:
@@ -179,6 +186,27 @@ setting. In `cmd`, the same line is `set LIB=%VULKAN_SDK%\Lib;%LIB%`.
 
 A cold Vulkan build is about eight minutes against three for CPU: `glslc` compiles ~1,977
 SPIR-V shaders on the way. Verified on Vulkan SDK 1.4.357 with CMake 4.4.3, 2026-09-09.
+
+### Where the application looks for the engine
+
+`dile-app` starts `dile-engine-host` by path, and looks in this order:
+
+| Where | When |
+|---|---|
+| `DILE_ENGINE_HOST` | debug builds only, and only if it names a file |
+| next to the running executable | always — and the only one a release build has |
+| `%CARGO_TARGET_DIR%\debug\` and `\release\` | debug builds only |
+
+A `cargo build` puts both binaries in the same `target\<profile>` directory, so the second
+row covers development as well as an installation. **WP7 ships it as a Tauri sidecar**, which
+puts it next to `dile.exe` in the installation directory — the same row again. The
+application does **not** declare it as a build dependency, so `cargo tauri build` works
+whether or not the engine host has been built; a missing one is a tray tooltip and a log line
+that says which command builds it, not a broken build.
+
+The two debug-only rows exist for the one case the first row cannot cover: a test binary,
+which cargo puts in `target\debug\deps\`. That is why the round-trip test below wants
+`CARGO_TARGET_DIR` set.
 
 **CI does not build this.** The SDK is a ~250 MB download and an installer on every run, for
 a feature that is opt-in at run time and that a runner with no GPU cannot exercise anyway.
@@ -205,6 +233,89 @@ cargo test -p dile-engine --test smoke -- --ignored --nocapture
 Leave either one unset and the test prints which variable is missing and returns without
 failing. It is asked for by hand, so the useful answer is the name of the variable to set
 rather than a panic that reads like a broken engine.
+
+## Trying the whole path, without a microphone
+
+WP3's round trip — spawn the engine process, load a model, transcribe, clean the text — is
+one `#[ignore]`d test. It uses the committed probe clip, so it needs a model and nothing
+else, and it prints the raw transcript next to the cleaned one.
+
+```powershell
+$env:CARGO_TARGET_DIR = "$PWD\target"   # so the test binary can find dile-engine-host
+$env:DILE_TEST_MODEL  = "$env:LOCALAPPDATA\io.github.xfurqan0.dile\models\ggml-large-v3-q5_0.bin"
+$env:DILE_TEST_DEVICE = "vulkan"        # or cpu
+cargo test -p dile-app --bin dile-app -- --ignored --nocapture engine_roundtrip
+```
+
+```text
+host 0.1.0 features ["gpu-vulkan"] pid 28384
+loaded on Vulkan0 in 921 ms (wall 921 ms)
+transcribed 32640 samples in 311 ms (wall 313 ms) on Vulkan0
+expected: Bugün hava çok güzel ve deniz sakin.
+raw:      Bugün hava çok güzel ve deniz sakin.
+cleaned:  Bugün hava çok güzel ve deniz sakin.
+```
+
+### The debug-only environment switches
+
+Three variables exist so that the paths a person normally has to click through can be run
+from a terminal. All three are behind `#[cfg(debug_assertions)]`: **a release build does not
+contain the code that reads them.**
+
+| Variable | What it does |
+|---|---|
+| `DILE_ASSUME_CONSENT=1` | answers *yes* to the model-download dialog instead of showing it |
+| `DILE_MODEL_DIR` | reads and writes models here instead of in the application's local data directory |
+| `DILE_FORCE_PROBE_FAIL=1` | makes the first-run GPU probe fail, so the CPU fallback tier can be exercised on a machine whose GPU works |
+
+`DILE_MODEL_DIR` is how a machine that already holds these weights avoids downloading a
+second copy. The tier decision lives in `%APPDATA%\io.github.xfurqan0.dile\engine.json`;
+delete it to make the next start probe again.
+
+## Regenerating the probe clip
+
+`crates/dile-app/assets/probe.wav` is the two seconds of Turkish the first-run GPU probe
+transcribes. It is synthesised by **Windows' own Turkish text-to-speech voice** — nobody's
+recording ships in this repository, and the probe has to be the same audio on every machine.
+It is committed, so no build needs a speech platform; this is here for the day the sentence
+changes, and the sentence and the expected words live beside it in
+`crates/dile-app/src/engine/probe.rs`.
+
+The Turkish voice (*Microsoft Tolga*) is a OneCore voice, which `System.Speech` does not
+enumerate — so the clip comes from `Windows.Media.SpeechSynthesis`, which does. It produces
+16 kHz mono 16-bit PCM directly, which is the shape `dile-capture` hands the engine; the
+second half of the script trims the silence off both ends and rewrites the header, because
+the speech platform writes an 18-byte `fmt` chunk and the file has to stay under 100 KB.
+
+```powershell
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Invoke-WinRtAwait { param($Operation, $Type)
+    $task = $asTask.MakeGenericMethod($Type).Invoke($null, @($Operation))
+    $task.Wait(-1) | Out-Null; return $task.Result }
+
+[Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media, ContentType = WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
+
+$synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+$synth.Voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices |
+    Where-Object { $_.Language -like 'tr*' } | Select-Object -First 1
+$stream = Invoke-WinRtAwait $synth.SynthesizeTextToStreamAsync("Bugün hava çok güzel ve deniz sakin.") `
+    ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
+
+$reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0))
+Invoke-WinRtAwait $reader.LoadAsync([uint32]$stream.Size) ([uint32]) | Out-Null
+$bytes = New-Object byte[] ([int]$stream.Size)
+$reader.ReadBytes($bytes)
+[System.IO.File]::WriteAllBytes("probe-raw.wav", $bytes)
+```
+
+Then trim the near-silent head and tail to about two seconds and write a canonical 44-byte
+header. `Where-Object { $_.Language -like 'tr*' }` returning nothing means no Turkish voice is
+installed: **stop there.** An English clip, or a synthetic tone, would make the probe test
+something other than what it exists to test.
 
 ## Troubleshooting
 

@@ -11,6 +11,46 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Added
 
+- **WP3 — the engine, at arm's length.** Hold the hotkey, speak, let go, and cleaned Turkish
+  text comes back. The engine runs in a process of its own and the tray links the wire rather
+  than the runtime, so killing that process costs the dictation in flight and nothing else.
+  - `dile-engine-proto`: the framing and the four messages both sides read, in a crate that
+    belongs to neither of them and depends on no speech runtime at all. A `u32` length, a kind
+    byte, then either UTF-8 JSON or raw `f32` samples at 16 kHz, with a 64 MiB cap so that a
+    desynchronised stream fails in a bounded way instead of asking the allocator for whatever
+    four misread bytes happen to say. A truncated frame, an oversize one and an audio payload
+    that is not a whole number of samples are each a named error rather than a surprise.
+  - `dile-engine-host`: the only binary in this workspace that links `transcribe-cpp`. stdout
+    is the wire, stderr is the log its parent forwards, and **nothing panics on a bad frame** —
+    a request that does not parse comes back as an error response with an id on it and the
+    loop goes on. The end of stdin is a normal exit.
+  - **The first-run GPU probe.** The application transcribes two seconds of Turkish whose
+    answer it already knows, inside the engine process, and only a device that returns enough
+    of it is used. The clip is Windows' own Turkish voice, committed, 64 KB — no recording of
+    a person ships in this repository, and a probe has to be the same audio on every machine
+    or it is measuring the microphone. Half the sentence is the bar, and diacritics are **not**
+    folded: a device that writes `guzel` for `güzel` has lost the point of the product. The
+    answer is written down once per machine rather than paid for on every start.
+  - **A machine that fails the probe drops to the CPU tier, and says so.** The fallback runs
+    `ggml-large-v3-turbo-q5_0.bin` — accuracy over speed, because a machine that ends up here
+    lost a probe rather than being in a hurry — and the tray reads *CPU tier (GPU probe
+    failed)* instead of quietly running ten times slower.
+  - **Crash isolation, with a bound.** The engine process going down is a log line, a tray
+    state and a respawn with a growing backoff; three in a row and it is left down and said
+    so, rather than restarted for ever against a fault that repeats. Every request carries a
+    deadline — two minutes for a cold Vulkan load, thirty seconds plus twice the audio for a
+    transcription — and one that passes it kills the process by its own pid, because there is
+    no way to un-wedge a thread. That is the whole reason the engine is a process.
+  - **The model downloader.** Hugging Face only, pinned by commit sha, sha256 embedded in the
+    application, `.part` then rename, `Range` resume, progress at four reports a second, and a
+    native consent dialog in both languages before the first byte. *Not now* is a state rather
+    than an error: the hotkey still records, the tray says there is no model, and nothing
+    crashes. Three edge cases are handled because they happened rather than because they were
+    imagined — a server that ignores the range, a 416, and a `.part` that is already the whole
+    file because the application was closed in the second before the rename.
+  - The tray gained five states and one idea: *back to normal* stopped being a constant,
+    because what normal looks like now depends on whether this machine has weights, a GPU and
+    an engine that stays up.
 - **WP4 — the Turkish layer.** `dile-core` stops returning its input. `clean(raw, level)` is a
   pipeline of eight rules, each a pure function whose documentation opens with the sentence of
   `docs/PROJECT.md` §5 it implements, with `Strictness` deciding which of them run and a
@@ -131,8 +171,13 @@ Nothing has been released. The work packages that get to a first release are in
 
 ### Known gaps
 
-Everything around the text. Nothing transcribes, nothing pastes, there is no panel and no
-settings, and the Turkish layer has no way to reach a user yet: it cleans a string handed to it
-in a test. The dictionary has nowhere to be stored, so it is empty in every build. WP2's own
-acceptance is **not** closed either: its criteria are about a person holding a key, and that
-hand test has not been run yet.
+**The last step.** The text is transcribed and cleaned and then written to the log, because
+the panel that should receive it is WP5's, and so is the paste that follows it. There are no
+settings either, so the dictionary is empty in every build — which means the accuracy feature
+this product exists for is implemented, measured and not yet reachable by anybody. The tier
+decision lives in its own small file until that settings file exists.
+
+**Packaging.** The engine binary is found beside the application, which is where a build puts
+it; declaring it as a Tauri sidecar so that an installer carries it is WP7's, and until then
+there is nothing to install anyway. CI builds the CPU-only host, because a runner with no GPU
+cannot exercise the other one.
