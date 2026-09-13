@@ -119,6 +119,10 @@ Nothing has been released. The work packages that get to a first release are in
 - **The v1 model is stock Whisper large-v3 `q5_0` with the dictionary prompt**, not a
   Turkish fine-tune. No fine-tune has beaten the stock weights on our own test set, and the
   one Turkish candidate left does not ship in a format the decision runtime can load.
+- **M0 is closed, and WP0 with it.** The term-heavy slice of our own test material now has an
+  adjudicated reference and has been scored: it confirms the v1 model rather than reversing it,
+  and WP0's acceptance criterion — CI green, which a private repository could never produce —
+  was met by the first run on the public repository. `docs/PROJECT.md` §4, §6 and §8.
 - **The README's "raw Whisper output in Turkish is full of fillers, stutters" claim is
   gone.** Our own M0 data contradicts it: across 20 sentences × 8 engine rows there was not
   one vocalised filler, and every whisper row also repaired a deliberate stutter. The pitch
