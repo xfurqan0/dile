@@ -1,6 +1,6 @@
 //! What the user gets to change about the trigger, and the numbers that come with it.
 
-use crate::keys::{Chord, ModifierOnly};
+use crate::keys::Trigger;
 
 /// How a press is interpreted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -36,23 +36,22 @@ pub const DEFAULT_MAX_HOLD_MS: u32 = 300_000;
 pub struct HotkeyConfig {
     /// Hold to talk, or tap to toggle.
     pub mode: Mode,
-    /// The main trigger. Defaults to `Ctrl+Alt+Space`.
-    pub primary: Chord,
-    /// The optional modifier-only second trigger, off by default.
+    /// The trigger. Defaults to the right Ctrl, held on its own.
     ///
-    /// Switching it on claims that key: a chord that needs the same physical key can no
-    /// longer be typed as dictation, because the machine reads the lone press first. That
-    /// is why it ships off, and why the key §3 suggests is the right Ctrl — the side almost
-    /// nothing else is bound to.
-    pub second_key: Option<ModifierOnly>,
+    /// **One trigger, not two.** The shipped design until 2026-09-14 was a chord plus an
+    /// optional modifier-only second key that was off by default; the maintainer's hand test
+    /// of the 0.1.0 installer replaced both with the second one — the right Ctrl *is* the
+    /// trigger, and a chord is what a user changes it to. See [`Trigger`].
+    pub trigger: Trigger,
     /// Below this many milliseconds a press is a tap, and a tap does not dictate.
     ///
-    /// **Consulted in [`Mode::Hold`] and for the second key only.** A toggle user taps fast
-    /// on purpose, so applying it there would make the first tap do nothing — see
-    /// [`Mode::Toggle`] and the module documentation of `crate::state`.
+    /// **Consulted in [`Mode::Hold`], and for a lone-modifier trigger in both modes.** A
+    /// toggle user taps fast on purpose, so applying it to a chord in toggle mode would make
+    /// the first tap do nothing — see [`Mode::Toggle`] and the module documentation of
+    /// `crate::state`.
     pub press_threshold_ms: u32,
     /// In [`Mode::Toggle`], the point at which a press stops latching and becomes
-    /// hold-to-talk instead. Ignored in [`Mode::Hold`].
+    /// hold-to-talk instead. Ignored in [`Mode::Hold`] and for a lone-modifier trigger.
     pub hold_takeover_ms: u32,
     /// The safety ceiling that ends a recording whose key-up never arrived.
     pub max_hold_ms: u32,
@@ -62,8 +61,7 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             mode: Mode::Hold,
-            primary: Chord::ctrl_alt_space(),
-            second_key: None,
+            trigger: Trigger::RIGHT_CTRL,
             press_threshold_ms: DEFAULT_PRESS_THRESHOLD_MS,
             hold_takeover_ms: DEFAULT_HOLD_TAKEOVER_MS,
             max_hold_ms: DEFAULT_MAX_HOLD_MS,
@@ -77,17 +75,19 @@ mod tests {
         DEFAULT_HOLD_TAKEOVER_MS, DEFAULT_MAX_HOLD_MS, DEFAULT_PRESS_THRESHOLD_MS, HotkeyConfig,
         Mode,
     };
-    use crate::keys::{Chord, MainKey, ModifierFamily};
+    use crate::keys::{ModifierKey, Trigger};
 
     #[test]
     fn the_defaults_are_the_ones_the_spec_decided() {
         let config = HotkeyConfig::default();
         assert_eq!(config.mode, Mode::Hold);
-        assert_eq!(config.primary, Chord::ctrl_alt_space());
-        assert_eq!(config.primary.key(), MainKey::Space);
-        assert!(config.primary.requires(ModifierFamily::Ctrl));
-        assert!(config.primary.requires(ModifierFamily::Alt));
-        assert_eq!(config.second_key, None);
+        assert_eq!(config.trigger, Trigger::RIGHT_CTRL);
+        assert!(
+            config.trigger.is_lone_key(),
+            "the shipped trigger is a key a hand can rest on, not a chord"
+        );
+        assert_eq!(config.trigger.lone_key(), Some(ModifierKey::CtrlRight));
+        assert_eq!(config.trigger.to_string(), "RightCtrl");
         assert_eq!(config.press_threshold_ms, DEFAULT_PRESS_THRESHOLD_MS);
         assert_eq!(config.hold_takeover_ms, DEFAULT_HOLD_TAKEOVER_MS);
         assert_eq!(config.max_hold_ms, DEFAULT_MAX_HOLD_MS);

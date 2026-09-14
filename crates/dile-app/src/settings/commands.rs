@@ -132,14 +132,15 @@ pub fn get_settings(store: State<'_, SettingsStore>) -> Settings {
 ///
 /// # Errors
 ///
-/// The chord does not parse, is the permanently excluded one, or has no modifier; two
-/// dictionary entries claim the same canonical spelling; the file could not be written.
+/// The trigger does not parse, is the permanently excluded chord, or is a chord with no
+/// modifier; two dictionary entries claim the same canonical spelling; the file could not be
+/// written.
 #[tauri::command]
 pub fn set_settings(
     settings: Settings,
     store: State<'_, SettingsStore>,
 ) -> Result<Settings, CommandError> {
-    check_chord(&settings.hotkey.chord)?;
+    check_trigger(&settings.hotkey.trigger)?;
     check_dictionary(&settings)?;
 
     store
@@ -225,30 +226,33 @@ pub fn rerun_probe(engine: State<'_, EngineClient>) {
     engine.reprobe();
 }
 
-/// Wait for the user to press the chord they want, and give it back as a string.
+/// Wait for the user to press the trigger they want, and give it back as a string.
 ///
 /// Ten seconds, then [`CommandError`] with the timeout key. The hook installed here never
 /// blocks a key, so pressing something while this is waiting still reaches the application
-/// underneath — including the chord that is currently registered.
+/// underneath — including the trigger that is currently registered.
+///
+/// Either shape comes back: a modifier pressed and released on its own is `RightCtrl`, a key
+/// pressed with modifiers held is `Ctrl+Alt+Space`. `dile_hotkey::next_trigger` owns that rule.
 ///
 /// # Errors
 ///
-/// Nothing was pressed before the deadline; the chord is the permanently excluded one or has
-/// no modifier; the operating system refused the hook.
+/// Nothing was pressed before the deadline; the trigger is the permanently excluded chord or a
+/// chord with no modifier; the operating system refused the hook.
 #[tauri::command]
 pub async fn capture_hotkey() -> Result<String, CommandError> {
     let captured =
-        tauri::async_runtime::spawn_blocking(|| dile_hotkey::next_chord(CAPTURE_TIMEOUT))
+        tauri::async_runtime::spawn_blocking(|| dile_hotkey::next_trigger(CAPTURE_TIMEOUT))
             .await
             .map_err(|error| CommandError::detailed("settings.error.chord.unreadable", &error))?
             .map_err(|error| CommandError::detailed("settings.error.chord.unreadable", &error))?;
 
     match captured {
         dile_hotkey::Capture::TimedOut => Err(CommandError::plain("settings.error.chord.timeout")),
-        dile_hotkey::Capture::Chord(chord) => {
-            let written = chord.to_string();
-            check_chord(&written)?;
-            log::info!("the settings window captured the chord {written}");
+        dile_hotkey::Capture::Trigger(trigger) => {
+            let written = trigger.to_string();
+            check_trigger(&written)?;
+            log::info!("the settings window captured the trigger {written}");
             Ok(written)
         }
     }
@@ -296,15 +300,24 @@ pub fn close_settings(app: AppHandle) {
     window::hide(&app);
 }
 
-/// The chord rules that are product decisions rather than parsing.
-fn check_chord(chord: &str) -> Result<(), CommandError> {
-    let parsed: dile_hotkey::Chord = chord
+/// The trigger rules that are product decisions rather than parsing.
+///
+/// **Both rules are about chords**, because a lone modifier cannot break either: it is a
+/// modifier by construction, and the excluded one is a chord. The error keys still say
+/// `chord` — they are the sentences a person reads about a chord they chose, and the only
+/// path that reaches them is a chord.
+fn check_trigger(trigger: &str) -> Result<(), CommandError> {
+    let parsed: dile_hotkey::Trigger = trigger
         .parse()
         .map_err(|error| CommandError::detailed("settings.error.chord.unreadable", &error))?;
 
+    let Some(chord) = parsed.chord() else {
+        return Ok(());
+    };
+
     // `docs/PROJECT.md` §3: excluded permanently. The IME swallows it before a low-level
     // hook ever sees it, so a person who set it would have a product that never hears them.
-    if parsed
+    if chord
         == super::EXCLUDED_CHORD
             .parse()
             .unwrap_or_else(|_| dile_hotkey::Chord::ctrl_alt_space())
@@ -314,7 +327,7 @@ fn check_chord(chord: &str) -> Result<(), CommandError> {
 
     // A bare key as a global hotkey takes that key away from every application on the
     // machine, for as long as Dile is running.
-    if !parsed.has_modifier() {
+    if !chord.has_modifier() {
         return Err(CommandError::plain("settings.error.chord.nomodifier"));
     }
 
@@ -342,27 +355,50 @@ fn check_dictionary(settings: &Settings) -> Result<(), CommandError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_chord, check_dictionary};
-    use crate::settings::{DictionaryEntry, Settings};
+    use super::{check_dictionary, check_trigger};
+    use crate::settings::{DEFAULT_TRIGGER, DictionaryEntry, Settings};
 
     #[test]
     fn the_excluded_chord_is_refused_however_it_is_spelled() {
         for spelling in ["Ctrl+Space", "ctrl + space", "Control+Space"] {
-            let refused = check_chord(spelling).expect_err(spelling);
+            let refused = check_trigger(spelling).expect_err(spelling);
             assert_eq!(refused.key, "settings.error.chord.excluded");
         }
-        // And the default is not.
-        assert!(check_chord("Ctrl+Alt+Space").is_ok());
+        // And a chord a person may reasonably want is not.
+        assert!(check_trigger("Ctrl+Alt+Space").is_ok());
     }
 
     #[test]
     fn a_chord_with_no_modifier_is_refused_and_says_which_rule_it_broke() {
-        let refused = check_chord("F9").expect_err("a bare key is not a global hotkey");
+        let refused = check_trigger("F9").expect_err("a bare key is not a global hotkey");
         assert_eq!(refused.key, "settings.error.chord.nomodifier");
 
-        let unreadable = check_chord("Ctrl+Enter").expect_err("Enter is outside the vocabulary");
+        let unreadable = check_trigger("Ctrl+Enter").expect_err("Enter is outside the vocabulary");
         assert_eq!(unreadable.key, "settings.error.chord.unreadable");
         assert!(unreadable.detail.is_some(), "a developer needs the reason");
+    }
+
+    #[test]
+    fn every_lone_modifier_is_an_acceptable_trigger() {
+        // Neither rule can bite here: a lone modifier *is* a modifier, and the excluded
+        // trigger is a chord. The shipped default is the first of these.
+        assert!(check_trigger(DEFAULT_TRIGGER).is_ok());
+        for spelling in [
+            "RightCtrl",
+            "LeftCtrl",
+            "RightAlt",
+            "LeftAlt",
+            "RightShift",
+            "LeftShift",
+            "RightMeta",
+            "LeftMeta",
+        ] {
+            assert!(check_trigger(spelling).is_ok(), "{spelling} was refused");
+        }
+
+        // A modifier family with no side is neither shape, and is named rather than guessed.
+        let refused = check_trigger("Ctrl").expect_err("a family is not a key");
+        assert_eq!(refused.key, "settings.error.chord.unreadable");
     }
 
     #[test]

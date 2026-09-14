@@ -28,25 +28,28 @@
 //! The command channel exists for one message, [`HotkeyListener::reset`], because focus loss
 //! is something only the application can see.
 //!
-//! ## Swallowing the chord: the primary one, and never the second key
+//! ## Swallowing a chord trigger, and never a lone-modifier one
 //!
-//! The hook is installed **blocking**, with exactly one hotkey in the blocking set: the
-//! primary chord. `Ctrl+Alt+Space` therefore does not reach the focused window, which is the
-//! point of it — a space landing in the editor the user is dictating into is a bug, not a
-//! side effect. What a swallowed Alt chord needs on Windows comes with `handy-keys`: it
-//! injects a menu mask, so releasing Alt after a blocked key does not read as a lone tap and
-//! arm the window's menu bar.
+//! The hook is installed **blocking**, and a chord trigger is the one entry in the blocking
+//! set: `Ctrl+Alt+Space` therefore does not reach the focused window, which is the point of it
+//! — a space landing in the editor the user is dictating into is a bug, not a side effect.
+//! What a swallowed Alt chord needs on Windows comes with `handy-keys`: it injects a menu
+//! mask, so releasing Alt after a blocked key does not read as a lone tap and arm the window's
+//! menu bar.
 //!
-//! **The second key is never in that set**, and the asymmetry is deliberate. It is a bare
-//! modifier — the right Ctrl — and swallowing it would take `Ctrl+C` away from every
-//! application on the machine. A lone modifier also has nothing to swallow: it means nothing
-//! until another key joins it, which is exactly the case [`crate::state`] resolves by
+//! **A lone-modifier trigger puts nothing in that set**, and the asymmetry is deliberate.
+//! The shipped trigger is the right Ctrl, and swallowing it would take `Ctrl+C` away from
+//! every application on the machine. It also has nothing to swallow: a lone modifier means
+//! nothing until another key joins it, which is exactly the case [`crate::state`] resolves by
 //! starting a recording and withdrawing it.
 //!
-//! Blocking is a system-wide behaviour, so the set is built from the configured chord and
-//! nothing else. A chord whose key this build of `handy-keys` cannot name is not blocked and
-//! the hook is installed observe-only, because a trigger that reports is worth more than one
-//! that refuses to start.
+//! **An empty set is not the same as no set**, which is why that case builds one anyway.
+//! `None` installs the hook observe-only, and the panel's three keys are added to this very
+//! set while it runs — so a lone-modifier trigger with no set would leave Enter reaching the
+//! document behind the panel. Observe-only is reserved for the one thing it is honest about:
+//! a chord whose key this build of `handy-keys` cannot name is not blocked and the hook
+//! reports anyway, because a trigger that reports is worth more than one that refuses to
+//! start.
 //!
 //! ## The panel's three keys, added and taken away while the hook runs
 //!
@@ -81,7 +84,7 @@ use handy_keys::{
 
 use crate::config::HotkeyConfig;
 use crate::error::Error;
-use crate::keys::{Key, MainKey, ModifierFamily, ModifierKey};
+use crate::keys::{Chord, Key, MainKey, ModifierFamily, ModifierKey};
 use crate::state::{Action, Actions, Event, HotkeyMachine, PanelKey};
 
 /// How long the thread waits for a key event before feeding the machine a tick.
@@ -345,28 +348,31 @@ impl Drop for HotkeyListener {
     }
 }
 
-/// The set of hotkeys the hook swallows: the primary chord, or nothing.
+/// The set of hotkeys the hook swallows: a chord trigger, or nothing at all.
 ///
-/// `None` means observe-only, and there are two ways to get there: a chord whose key this
-/// build of `handy-keys` cannot name, and a chord `handy-keys` rejects as empty. Neither can
-/// happen with the shipped default; both are a reason to keep reporting rather than to fail
-/// to start.
+/// A lone-modifier trigger gets an **empty** set rather than `None`, and the difference
+/// matters: `None` installs the hook observe-only, and the panel's three keys go into this
+/// same set later. See the module documentation — swallowing a bare right Ctrl would take
+/// `Ctrl+C` away from the whole machine, but so would leaving the panel unable to block Enter.
 ///
-/// The second key is deliberately absent. See the module documentation: swallowing a bare
-/// right Ctrl would take `Ctrl+C` away from the whole machine.
+/// `None` means observe-only, and there are two ways to get there, both of them a chord this
+/// build cannot express: a key `handy-keys` cannot name, and a hotkey it rejects as empty.
+/// Neither can happen with the shipped default, and both are a reason to keep reporting rather
+/// than to fail to start.
 fn blocking_set(config: &HotkeyConfig) -> Option<BlockingHotkeys> {
-    let primary = primary_hotkey(config)?;
     let mut hotkeys = HashSet::with_capacity(1);
-    hotkeys.insert(primary);
+    if let Some(chord) = config.trigger.chord() {
+        hotkeys.insert(chord_hotkey(&chord)?);
+    }
     Some(Arc::new(Mutex::new(hotkeys)))
 }
 
-/// The primary chord in the hook's own vocabulary.
-fn primary_hotkey(config: &HotkeyConfig) -> Option<OsHotkey> {
-    let key = to_os_key(config.primary.key())?;
+/// A chord trigger in the hook's own vocabulary.
+fn chord_hotkey(chord: &Chord) -> Option<OsHotkey> {
+    let key = to_os_key(chord.key())?;
     let modifiers = ModifierFamily::ALL
         .iter()
-        .filter(|family| config.primary.requires(**family))
+        .filter(|family| chord.requires(**family))
         .fold(Modifiers::empty(), |held, family| {
             held | os_modifier(*family)
         });
@@ -430,10 +436,11 @@ fn run(
     running: &AtomicBool,
 ) {
     // Resolved once: the state machine speaks `MainKey`, the hook speaks `handy_keys::Key`,
-    // and a chord's key never changes while a listener is alive. A key this build of
-    // `handy-keys` cannot name leaves the chord unmatchable, which is the honest outcome —
-    // the second key, if configured, still works.
-    let chord_key = to_os_key(config.primary.key());
+    // and a trigger never changes while a listener is alive. `None` here is either a
+    // lone-modifier trigger, which has no main key to name, or a chord key this build of
+    // `handy-keys` cannot spell — in which case the chord is unmatchable, which is the honest
+    // outcome and the same one `blocking_set` reached.
+    let chord_key = config.trigger.main_key().and_then(to_os_key);
     let mut machine = HotkeyMachine::new(config);
 
     while running.load(Ordering::SeqCst) {
@@ -493,7 +500,7 @@ fn translate(event: &OsKeyEvent, chord_key: Option<OsKey>, now: Instant) -> Opti
                 }
             }
             // A modifier with no name in this crate's vocabulary — `Fn` on a laptop. It is
-            // still "some other key" for the purpose of withdrawing a second-key press.
+            // still "some other key" for the purpose of withdrawing a lone-modifier press.
             None if event.is_key_down => Event::OtherKeyDown(now),
             None => return None,
         });
@@ -509,8 +516,8 @@ fn translate(event: &OsKeyEvent, chord_key: Option<OsKey>, now: Instant) -> Opti
         });
     }
 
-    // The panel's keys, after the chord and before everything else: a user who binds their
-    // chord to one of them has asked for a trigger, and a trigger outranks a window button.
+    // The panel's keys, after the trigger and before everything else: a user who binds their
+    // trigger to one of them has asked for a trigger, and a trigger outranks a window button.
     // Whether the panel is up is not decided here — `HotkeyMachine` owns that, so the rule
     // is unit-testable and the hook stays a translator.
     if event.is_key_down
@@ -539,7 +546,10 @@ const MODIFIERS: [(Modifiers, ModifierKey); 8] = [
     (Modifiers::CMD_RIGHT, ModifierKey::MetaRight),
 ];
 
-fn map_modifier(changed: Modifiers) -> Option<ModifierKey> {
+/// One sided flag as this crate's physical key, or `None` for a compound flag or a modifier
+/// with no name here. `crate::capture` reads the same table, so a key the hook can report and
+/// a key the settings window can capture cannot end up being two different lists.
+pub(crate) fn map_modifier(changed: Modifiers) -> Option<ModifierKey> {
     MODIFIERS
         .iter()
         .find(|(flag, _)| *flag == changed)
@@ -589,12 +599,21 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        blocking_set, from_os_key, map_modifier, panel_hotkeys, panel_key_of, primary_hotkey,
+        blocking_set, chord_hotkey, from_os_key, map_modifier, panel_hotkeys, panel_key_of,
         to_os_key, translate,
     };
     use crate::config::HotkeyConfig;
-    use crate::keys::{Key, MainKey, ModifierKey, ModifierOnly};
+    use crate::keys::{Chord, Key, MainKey, ModifierKey, Trigger};
     use crate::state::{Event, PanelKey};
+
+    /// A configuration whose trigger is the chord Dile shipped as its default until
+    /// 2026-09-14. The shipped trigger is a lone modifier now, so every chord test says so.
+    fn chord_config() -> HotkeyConfig {
+        HotkeyConfig {
+            trigger: Trigger::Chord(Chord::ctrl_alt_space()),
+            ..HotkeyConfig::default()
+        }
+    }
 
     fn modifier_event(changed: Modifiers, is_key_down: bool) -> OsKeyEvent {
         OsKeyEvent {
@@ -692,7 +711,7 @@ mod tests {
         assert_eq!(
             translate(&modifier_event(Modifiers::CTRL_RIGHT, true), chord_key, now),
             Some(Event::Down(Key::Modifier(ModifierKey::CtrlRight), now)),
-            "the second key of §3 is a side, so the side has to survive translation"
+            "the shipped trigger of §3 names a side, so the side has to survive translation"
         );
         assert_eq!(
             translate(&modifier_event(Modifiers::CTRL_LEFT, false), chord_key, now),
@@ -721,8 +740,8 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_swallows_the_primary_chord_on_either_side_of_the_keyboard() {
-        let hotkey = primary_hotkey(&HotkeyConfig::default()).expect("the default chord");
+    fn the_hook_swallows_a_chord_trigger_on_either_side_of_the_keyboard() {
+        let hotkey = chord_hotkey(&Chord::ctrl_alt_space()).expect("a nameable chord");
 
         assert_eq!(hotkey.key, Some(OsKey::Space));
         // The compound flags, so that either Ctrl and either Alt match — the same rule the
@@ -822,17 +841,60 @@ mod tests {
     }
 
     #[test]
-    fn the_second_key_is_never_in_the_blocking_set() {
-        let config = HotkeyConfig {
-            second_key: Some(ModifierOnly::RIGHT_CTRL),
-            ..HotkeyConfig::default()
-        };
-        let blocking = blocking_set(&config).expect("the default chord is blockable");
+    fn a_chord_trigger_is_the_only_entry_in_the_blocking_set() {
+        let blocking = blocking_set(&chord_config()).expect("a nameable chord is blockable");
         let hotkeys = blocking.lock().expect("an uncontended set");
 
-        // One entry, and it is the chord. A bare right Ctrl in here would swallow Ctrl+C
-        // for every application on the machine.
-        assert_eq!(hotkeys.len(), 1);
-        assert!(hotkeys.iter().all(|hotkey| hotkey.key.is_some()));
+        assert_eq!(hotkeys.len(), 1, "one trigger, one entry");
+        let expected = chord_hotkey(&Chord::ctrl_alt_space()).expect("a nameable chord");
+        assert!(
+            hotkeys.contains(&expected),
+            "the entry is the configured chord and nothing else"
+        );
+    }
+
+    #[test]
+    fn a_lone_modifier_trigger_puts_nothing_in_the_blocking_set() {
+        // The shipped default. A bare right Ctrl in here would swallow `Ctrl+C` for every
+        // application on the machine.
+        let blocking = blocking_set(&HotkeyConfig::default()).expect(
+            "an empty set, not observe-only: the panel adds its three keys to this very set",
+        );
+        let hotkeys = blocking.lock().expect("an uncontended set");
+        assert_eq!(hotkeys.len(), 0);
+    }
+
+    #[test]
+    fn a_lone_modifier_trigger_still_reaches_the_machine_with_its_side() {
+        let now = Instant::now();
+        // No main key at all, which is what `run` resolves for a lone-modifier trigger.
+        let chord_key = HotkeyConfig::default()
+            .trigger
+            .main_key()
+            .and_then(to_os_key);
+        assert_eq!(chord_key, None);
+
+        assert_eq!(
+            translate(&modifier_event(Modifiers::CTRL_RIGHT, true), chord_key, now),
+            Some(Event::Down(Key::Modifier(ModifierKey::CtrlRight), now))
+        );
+        assert_eq!(
+            translate(
+                &modifier_event(Modifiers::CTRL_RIGHT, false),
+                chord_key,
+                now
+            ),
+            Some(Event::Up(Key::Modifier(ModifierKey::CtrlRight), now))
+        );
+        // And every other key is what withdraws the press, the space bar included: with no
+        // main key configured there is nothing for it to complete.
+        assert_eq!(
+            translate(&key_event(OsKey::Space, true), chord_key, now),
+            Some(Event::OtherKeyDown(now))
+        );
+        assert_eq!(
+            translate(&key_event(OsKey::C, true), chord_key, now),
+            Some(Event::OtherKeyDown(now))
+        );
     }
 }

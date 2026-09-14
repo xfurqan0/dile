@@ -7,10 +7,19 @@
 //!
 //! ```text
 //! cargo run -p dile-hotkey --example hotkey_probe -- --seconds 60
-//! cargo run -p dile-hotkey --example hotkey_probe -- --toggle --second-key
+//! cargo run -p dile-hotkey --example hotkey_probe -- --toggle --trigger Ctrl+Alt+Space
 //! ```
 //!
-//! What to try, and what should appear:
+//! What to try with the default trigger — the right Ctrl, on its own — and what should appear:
+//!
+//! | Press | Expected |
+//! |---|---|
+//! | Right Ctrl, held a second, released | `StartRecording` then `StopRecording` |
+//! | Right Ctrl, tapped | `StartRecording` then `DiscardRecording` + `OpenPanelIdle` |
+//! | Right Ctrl then `C` | `StartRecording` then `DiscardRecording`, and the copy still works |
+//! | Left Ctrl, held | nothing at all — a lone trigger is one physical key |
+//!
+//! And with `--trigger Ctrl+Alt+Space`:
 //!
 //! | Press | Expected |
 //! |---|---|
@@ -18,13 +27,11 @@
 //! | `Ctrl+Alt+Space`, tapped | `StartRecording` then `DiscardRecording` + `OpenPanelIdle` |
 //! | `Ctrl+Alt+Space` on a Turkish layout | the same, with `layout=041F` on the line |
 //! | `Ctrl+Space` (no Alt) | nothing at all — that chord is excluded permanently |
-//! | Right Ctrl alone, held (`--second-key`) | `StartRecording` then `StopRecording` |
-//! | Right Ctrl then `C` (`--second-key`) | `StartRecording` then `DiscardRecording` |
 //!
-//! **While the probe runs, the chord is swallowed.** The listener installs the hook in
-//! blocking mode with the primary chord in it, so `Ctrl+Alt+Space` never reaches the focused
-//! window — that is the behaviour being checked, and a space that still lands in the editor
-//! is the failure. The second key is never blocked, so `Ctrl+C` keeps working throughout.
+//! **A chord trigger is swallowed while the probe runs.** The listener installs the hook in
+//! blocking mode with that chord in it, so `Ctrl+Alt+Space` never reaches the focused window —
+//! that is the behaviour being checked, and a space that still lands in the editor is the
+//! failure. A lone-modifier trigger is never blocked, so `Ctrl+C` keeps working throughout.
 //!
 //! It exits on its own after `--seconds` so that an unattended run cannot leave a global
 //! keyboard hook installed. Ctrl+C also works, but it is a hard exit: the hook is then
@@ -39,9 +46,7 @@ fn main() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
-    use dile_hotkey::{
-        Chord, HotkeyConfig, HotkeyListener, MainKey, Mode, ModifierFamily, ModifierOnly,
-    };
+    use dile_hotkey::{HotkeyConfig, HotkeyListener, Mode};
 
     let options = Options::parse(std::env::args().skip(1))?;
 
@@ -51,19 +56,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Mode::Hold
         },
-        primary: Chord::new(&[ModifierFamily::Ctrl, ModifierFamily::Alt], MainKey::Space),
-        second_key: options.second_key.then_some(ModifierOnly::RIGHT_CTRL),
+        trigger: options.trigger,
         ..HotkeyConfig::default()
     };
 
     println!("dile-hotkey {} probe", dile_hotkey::version());
     println!(
-        "  mode              {:?}\n  chord             Ctrl+Alt+Space\n  second key        {}",
+        "  mode              {:?}\n  trigger           {} ({})",
         config.mode,
-        if options.second_key {
-            "Right Ctrl"
+        config.trigger,
+        if config.trigger.is_lone_key() {
+            "one key, never swallowed"
         } else {
-            "off"
+            "a chord, swallowed while this runs"
         }
     );
     println!(
@@ -74,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  running for       {} s\n", options.seconds);
 
     let listener = HotkeyListener::spawn(config)?;
-    println!("hook installed. press the chord.\n");
+    println!("hook installed. press the trigger.\n");
 
     let started = Instant::now();
     let deadline = started + Duration::from_secs(options.seconds);
@@ -116,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Options {
     seconds: u64,
     toggle: bool,
-    second_key: bool,
+    trigger: dile_hotkey::Trigger,
 }
 
 #[cfg(target_os = "windows")]
@@ -125,7 +130,9 @@ impl Options {
         let mut options = Self {
             seconds: 30,
             toggle: false,
-            second_key: false,
+            // The shipped default, so that running the probe with no arguments checks what
+            // a user actually has.
+            trigger: dile_hotkey::Trigger::RIGHT_CTRL,
         };
         let mut args = args.peekable();
         while let Some(argument) = args.next() {
@@ -137,9 +144,14 @@ impl Options {
                         .map_err(|_| format!("--seconds {value}: not a number"))?;
                 }
                 "--toggle" => options.toggle = true,
-                "--second-key" => options.second_key = true,
+                "--trigger" => {
+                    let value = args.next().ok_or("--trigger needs a key or a chord")?;
+                    options.trigger = value
+                        .parse()
+                        .map_err(|error| format!("--trigger {value}: {error}"))?;
+                }
                 "--help" | "-h" => {
-                    println!("hotkey_probe [--seconds N] [--toggle] [--second-key]");
+                    println!("hotkey_probe [--seconds N] [--toggle] [--trigger RightCtrl]");
                     std::process::exit(0);
                 }
                 other => return Err(format!("unknown argument: {other}")),

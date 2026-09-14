@@ -53,11 +53,13 @@ pub struct Ui {
     panel: bool,
     /// What the tray goes back to when nothing is happening. See the module documentation.
     resting: Arc<Mutex<Status>>,
-    /// The chord the tooltip names, as the settings spell it.
+    /// The trigger the tooltip names, as the settings spell it — `RightCtrl`, not the
+    /// words a person reads.
     ///
     /// Held here rather than read from the settings on every repaint: the tray is repainted
     /// several times per dictation, and what it needs is one short string that changes once
-    /// in a blue moon.
+    /// in a blue moon. Stored unspelled because the language is a setting too, and a label
+    /// resolved at start-up would still be in the old language after a switch.
     hotkey: Arc<RwLock<String>>,
 }
 
@@ -110,13 +112,18 @@ impl Ui {
         Arc::clone(&self.strings)
     }
 
-    /// The chord the tooltip names.
+    /// The trigger the tooltip names, in the language the interface is in.
+    ///
+    /// A chord comes back as it is written; a lone modifier comes back as words, because
+    /// `RightCtrl` is a spelling for a settings file and "Right Ctrl" is one for a person.
+    /// See [`crate::i18n::trigger_label`].
     #[must_use]
     pub fn hotkey(&self) -> String {
-        match self.hotkey.read() {
+        let trigger = match self.hotkey.read() {
             Ok(hotkey) => hotkey.clone(),
             Err(_) => String::new(),
-        }
+        };
+        crate::i18n::trigger_label(&self.strings(), &trigger)
     }
 
     /// Show a state on the tray and tell the panel about it.

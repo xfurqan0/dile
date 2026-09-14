@@ -29,11 +29,18 @@
 //! is `hold_takeover_ms`: hold the chord past it and the press behaves as hold-to-talk,
 //! ending on release. Both idioms therefore live on one key without a setting to explain.
 //!
-//! **The second key is hold-semantics only, in both modes.** It is a lone modifier, so the
-//! machine cannot tell a dictation from the opening of `Ctrl+C` until something else
-//! happens. It resolves that by starting anyway and withdrawing: any other key going down
-//! during the hold means the press was a modifier chord, so the recording is discarded and
-//! that press is ignored until the key comes back up.
+//! **A lone-modifier trigger is hold-semantics only, in both modes.** The shipped trigger is
+//! the right Ctrl on its own, and a lone modifier cannot be told from the opening of
+//! `Ctrl+C` until something else happens. The machine resolves that by starting anyway and
+//! withdrawing: any other key going down during the hold means the press was a modifier
+//! chord, so the recording is discarded and that press is ignored until the key comes back
+//! up. Latching a recording to a key a hand rests on would be a trap rather than a feature,
+//! which is why the toggle latch above belongs to a chord trigger alone.
+//!
+//! **One trigger is live at a time, and the configuration says which.** A chord trigger is
+//! started only by its chord; a lone-modifier trigger is started only by its key, and every
+//! other key — named or not — is what withdraws it. There is no second path running beside
+//! the first, because since 2026-09-14 there is no second trigger: see [`crate::keys::Trigger`].
 
 use std::time::{Duration, Instant};
 
@@ -121,8 +128,8 @@ pub enum Action {
 /// The actions one event produced — never more than two.
 ///
 /// Two is not an arbitrary bound. The only pairs the rules can produce are a discarded tap
-/// followed by an idle panel, and a second key withdrawing in the same instant the primary
-/// chord completes; every other transition emits one action or none.
+/// followed by an idle panel, and a lone-modifier press withdrawn by the very key the review
+/// panel then acts on; every other transition emits one action or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Actions {
     // The unused tail is never read: `as_slice` stops at `len`. A filler variant costs
@@ -185,20 +192,15 @@ impl Default for Actions {
     }
 }
 
-/// Which trigger a live recording belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Trigger {
-    /// The primary chord.
-    Primary,
-    /// The modifier-only second key.
-    Second,
-}
-
 /// What the machine is currently doing, when it is doing anything.
+///
+/// There is no "which trigger" in here any more: [`HotkeyConfig::trigger`] names exactly one,
+/// so the shape of the live press is already known from the configuration and a second field
+/// recording it could only ever disagree with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Active {
-    /// A trigger is held down and recording; `since` is when the press began.
-    Held { trigger: Trigger, since: Instant },
+    /// The trigger is held down and recording; `since` is when the press began.
+    Held { since: Instant },
     /// Toggle mode: recording continues with nothing held, until the next tap.
     Latched,
 }
@@ -237,17 +239,32 @@ impl HeldModifiers {
 ///
 /// ```
 /// use std::time::{Duration, Instant};
-/// use dile_hotkey::{Action, Event, HotkeyConfig, HotkeyMachine, Key, MainKey, ModifierKey};
+/// use dile_hotkey::{
+///     Action, Chord, Event, HotkeyConfig, HotkeyMachine, Key, MainKey, ModifierKey, Trigger,
+/// };
 ///
+/// // The shipped trigger: the right Ctrl, held on its own.
 /// let mut machine = HotkeyMachine::new(HotkeyConfig::default());
 /// let t0 = Instant::now();
+///
+/// let started = machine.on_event(Event::Down(Key::Modifier(ModifierKey::CtrlRight), t0));
+/// assert_eq!(started.as_slice(), &[Action::StartRecording]);
+///
+/// let released = t0 + Duration::from_millis(1_400);
+/// let stopped = machine.on_event(Event::Up(Key::Modifier(ModifierKey::CtrlRight), released));
+/// assert_eq!(stopped.as_slice(), &[Action::StopRecording]);
+///
+/// // A chord is what a user changes it to, and it behaves the same way.
+/// let mut machine = HotkeyMachine::new(HotkeyConfig {
+///     trigger: Trigger::Chord(Chord::ctrl_alt_space()),
+///     ..HotkeyConfig::default()
+/// });
 ///
 /// machine.on_event(Event::Down(Key::Modifier(ModifierKey::CtrlLeft), t0));
 /// machine.on_event(Event::Down(Key::Modifier(ModifierKey::AltLeft), t0));
 /// let started = machine.on_event(Event::Down(Key::Main(MainKey::Space), t0));
 /// assert_eq!(started.as_slice(), &[Action::StartRecording]);
 ///
-/// let released = t0 + Duration::from_millis(1_400);
 /// let stopped = machine.on_event(Event::Up(Key::Main(MainKey::Space), released));
 /// assert_eq!(stopped.as_slice(), &[Action::StopRecording]);
 /// ```
@@ -257,12 +274,13 @@ pub struct HotkeyMachine {
     held: HeldModifiers,
     main_held: bool,
     active: Option<Active>,
-    /// Ignore the primary chord until it is broken. Set when a recording ended while the
-    /// chord was still held, so the rest of that press cannot start a new one.
-    suppress_primary: bool,
-    /// Ignore the second key until it comes back up. Set when the press turned out to be a
-    /// modifier chord, or when the safety timeout ended it.
-    suppress_second: bool,
+    /// Ignore the trigger until the press that is in flight has ended.
+    ///
+    /// One flag for both shapes, because only one of them can be configured: a chord is
+    /// ignored until it is broken, and a lone modifier until it comes back up. It is set
+    /// when a recording ended while the trigger was still held — the second tap of a toggle,
+    /// the safety ceiling — and when a lone-modifier press turned out to be a modifier chord.
+    suppressed: bool,
     /// When the live recording began — which is not the same as when the current press
     /// began, because a toggle latch outlives the press that started it.
     recording_since: Option<Instant>,
@@ -279,8 +297,7 @@ impl HotkeyMachine {
             held: HeldModifiers::default(),
             main_held: false,
             active: None,
-            suppress_primary: false,
-            suppress_second: false,
+            suppressed: false,
             recording_since: None,
             panel_keys: false,
         }
@@ -320,7 +337,7 @@ impl HotkeyMachine {
             Event::Down(key, now) => self.on_down(key, now),
             Event::Up(key, now) => self.on_up(key, now),
             Event::Panel(key, _) => self.on_panel_key(key),
-            Event::OtherKeyDown(_) => self.withdraw_second_key(),
+            Event::OtherKeyDown(_) => self.withdraw(),
             Event::Tick(now) => self.on_tick(now),
         }
     }
@@ -333,8 +350,15 @@ impl HotkeyMachine {
     /// [`Mode::Hold`] there is nothing to do: a hold-to-talk recording lives as long as a
     /// press, and one nobody is pressing would have no end. The application hides the panel
     /// either way and the next press starts fresh.
+    ///
+    /// **A lone-modifier trigger is the hold case whatever the mode says**, for the same
+    /// reason: it never latches, so nothing it can do would stop a latched recording, and one
+    /// started here would run until the safety ceiling caught it.
     pub fn rerecord(&mut self, now: Instant) -> Actions {
-        if self.config.mode != Mode::Toggle || self.active.is_some() {
+        if self.config.mode != Mode::Toggle
+            || self.config.trigger.is_lone_key()
+            || self.active.is_some()
+        {
             return Actions::none();
         }
         self.active = Some(Active::Latched);
@@ -358,14 +382,13 @@ impl HotkeyMachine {
         let out = self.end_active_press(now);
         self.held.clear();
         self.main_held = false;
-        self.suppress_primary = false;
-        self.suppress_second = false;
+        self.suppressed = false;
         out
     }
 
     fn on_down(&mut self, key: Key, now: Instant) -> Actions {
         let was_chord = self.chord_satisfied();
-        let is_second = self.is_second_key(key);
+        let is_lone_trigger = self.is_lone_trigger(key);
 
         match key {
             Key::Modifier(modifier) => {
@@ -376,10 +399,11 @@ impl HotkeyMachine {
                 self.held.insert(modifier);
             }
             Key::Main(main) => {
-                if main.normalized() != self.config.primary.key() {
-                    // A named key that belongs to no trigger. The adapter should have sent
+                if Some(main.normalized()) != self.config.trigger.main_key() {
+                    // A named key that belongs to no trigger — which is every main key when
+                    // the trigger is a lone modifier. The adapter should have sent
                     // `OtherKeyDown`; treat it as one rather than trusting it blindly.
-                    return self.withdraw_second_key();
+                    return self.withdraw();
                 }
                 if self.main_held {
                     return Actions::none();
@@ -390,16 +414,19 @@ impl HotkeyMachine {
 
         let mut out = Actions::none();
 
-        // Anything other than the second key itself going down during a second-key hold
-        // means the press was the start of `Ctrl+C`, not of a sentence.
-        if !is_second {
-            out.extend(self.withdraw_second_key());
+        // Anything but the lone modifier itself going down during its hold means the press
+        // was the start of `Ctrl+C`, not of a sentence.
+        if !is_lone_trigger {
+            out.extend(self.withdraw());
         }
 
+        // Only one of these two can fire, and the configuration is what decides which: a
+        // chord trigger never sees `is_lone_trigger`, and a lone-modifier trigger can never
+        // satisfy a chord.
         if !was_chord && self.chord_satisfied() {
             out.extend(self.on_chord_down(now));
-        } else if is_second {
-            out.extend(self.on_second_key_down(now));
+        } else if is_lone_trigger {
+            out.extend(self.on_lone_key_down(now));
         }
 
         out
@@ -407,7 +434,7 @@ impl HotkeyMachine {
 
     fn on_up(&mut self, key: Key, now: Instant) -> Actions {
         let was_chord = self.chord_satisfied();
-        let is_second = self.is_second_key(key);
+        let is_lone_trigger = self.is_lone_trigger(key);
 
         match key {
             Key::Modifier(modifier) => {
@@ -419,103 +446,78 @@ impl HotkeyMachine {
                 self.held.remove(modifier);
             }
             Key::Main(main) => {
-                if main.normalized() != self.config.primary.key() || !self.main_held {
+                if Some(main.normalized()) != self.config.trigger.main_key() || !self.main_held {
                     return Actions::none();
                 }
                 self.main_held = false;
             }
         }
 
-        let mut out = Actions::none();
-
-        // At most one of these two can own the release: they require different values of
-        // `self.active`, so the two-action bound of `Actions` holds.
-        if is_second {
-            out.extend(self.on_second_key_up(now));
-        }
-        if was_chord && !self.chord_satisfied() {
-            out.extend(self.on_chord_up(now));
+        // The configured trigger decides which half of this can be true — a chord trigger
+        // never sees `is_lone_trigger`, and a lone-modifier one can never have satisfied a
+        // chord — so one release produces one outcome and the bound of `Actions` holds.
+        if is_lone_trigger || (was_chord && !self.chord_satisfied()) {
+            return self.on_trigger_up(now);
         }
 
-        out
+        Actions::none()
     }
 
     fn on_chord_down(&mut self, now: Instant) -> Actions {
-        if self.suppress_primary {
+        if self.suppressed {
             return Actions::none();
         }
         match self.active {
-            // The other trigger owns the recording. Nothing starts twice.
+            // A press is already recording. Nothing starts twice.
             Some(Active::Held { .. }) => Actions::none(),
             // Toggle mode, second tap. The press ends the recording; the release that
             // follows is swallowed, so a slow second tap is still one tap.
             Some(Active::Latched) => {
                 self.active = None;
                 self.recording_since = None;
-                self.suppress_primary = true;
+                self.suppressed = true;
                 Actions::one(Action::StopRecording)
             }
             None => {
-                self.active = Some(Active::Held {
-                    trigger: Trigger::Primary,
-                    since: now,
-                });
+                self.active = Some(Active::Held { since: now });
                 self.recording_since = Some(now);
                 Actions::one(Action::StartRecording)
             }
         }
     }
 
-    fn on_second_key_down(&mut self, now: Instant) -> Actions {
-        if self.suppress_second || self.active.is_some() {
+    fn on_lone_key_down(&mut self, now: Instant) -> Actions {
+        if self.suppressed || self.active.is_some() {
             return Actions::none();
         }
-        self.active = Some(Active::Held {
-            trigger: Trigger::Second,
-            since: now,
-        });
+        self.active = Some(Active::Held { since: now });
         self.recording_since = Some(now);
         Actions::one(Action::StartRecording)
     }
 
-    fn on_chord_up(&mut self, now: Instant) -> Actions {
-        if self.suppress_primary {
-            self.suppress_primary = false;
+    /// The trigger was let go — the chord broken, or the lone modifier lifted.
+    ///
+    /// One function for both shapes because the release is where they stop differing: the
+    /// suppression that a withdrawal or a second toggle tap armed is spent here, and
+    /// everything after that is [`HotkeyMachine::end_active_press`]'s business.
+    fn on_trigger_up(&mut self, now: Instant) -> Actions {
+        if self.suppressed {
+            self.suppressed = false;
             return Actions::none();
         }
-        match self.active {
-            Some(Active::Held {
-                trigger: Trigger::Primary,
-                ..
-            }) => self.end_active_press(now),
-            _ => Actions::none(),
-        }
-    }
-
-    fn on_second_key_up(&mut self, now: Instant) -> Actions {
-        if self.suppress_second {
-            self.suppress_second = false;
-            return Actions::none();
-        }
-        match self.active {
-            Some(Active::Held {
-                trigger: Trigger::Second,
-                ..
-            }) => self.end_active_press(now),
-            _ => Actions::none(),
-        }
+        self.end_active_press(now)
     }
 
     /// The one place a press in progress ends, whether the key came up or a reset said so.
     fn end_active_press(&mut self, now: Instant) -> Actions {
-        let Some(Active::Held { trigger, since }) = self.active else {
+        let Some(Active::Held { since }) = self.active else {
             return Actions::none();
         };
         let held_for = now.saturating_duration_since(since);
 
-        // The second key is hold-to-talk in both modes: it is a lone modifier, and latching
-        // a recording to a key a hand rests on would be a trap rather than a feature.
-        if trigger == Trigger::Second || self.config.mode == Mode::Hold {
+        // A lone modifier is hold-to-talk in both modes: latching a recording to a key a hand
+        // rests on would be a trap rather than a feature.
+        if self.config.trigger.is_lone_key() || self.config.mode == Mode::Hold {
             self.active = None;
             self.recording_since = None;
             return if held_for < self.press_threshold() {
@@ -539,31 +541,33 @@ impl HotkeyMachine {
 
     /// One of the panel's keys went down.
     ///
-    /// It is still a key on the keyboard, so it withdraws a second-key press exactly as any
-    /// other would: Esc pressed during a right-Ctrl hold is a person cancelling, not a
+    /// It is still a key on the keyboard, so it withdraws a lone-modifier press exactly as
+    /// any other would: Esc pressed during a right-Ctrl hold is a person cancelling, not a
     /// person dictating. The panel action comes after the withdrawal, which is the pair the
     /// two-action bound of [`Actions`] allows for.
     ///
     /// With the panel down the key is nothing but another key, which is what makes the mode
     /// safe: the machine cannot emit a panel action while there is no panel to act on.
     fn on_panel_key(&mut self, key: PanelKey) -> Actions {
-        let mut out = self.withdraw_second_key();
+        let mut out = self.withdraw();
         if self.panel_keys {
             out.extend(Actions::one(key.action()));
         }
         out
     }
 
-    /// The second key's press was a modifier chord after all.
-    fn withdraw_second_key(&mut self) -> Actions {
-        if let Some(Active::Held {
-            trigger: Trigger::Second,
-            ..
-        }) = self.active
-        {
+    /// A lone-modifier press was a modifier chord after all.
+    ///
+    /// Nothing to do for a chord trigger: the user asked for those keys by name, so another
+    /// key going down beside them is somebody typing, not somebody changing their mind.
+    fn withdraw(&mut self) -> Actions {
+        if !self.config.trigger.is_lone_key() {
+            return Actions::none();
+        }
+        if let Some(Active::Held { .. }) = self.active {
             self.active = None;
             self.recording_since = None;
-            self.suppress_second = true;
+            self.suppressed = true;
             Actions::one(Action::DiscardRecording)
         } else {
             Actions::none()
@@ -578,34 +582,33 @@ impl HotkeyMachine {
             return Actions::none();
         }
 
-        // The recording ends, but the key may still be down. Suppress its trigger so the
+        // The recording ends, but the key may still be down. Suppress the trigger so the
         // rest of that press — auto-repeat included — cannot start another one.
-        match self.active {
-            Some(Active::Held {
-                trigger: Trigger::Primary,
-                ..
-            }) => self.suppress_primary = true,
-            Some(Active::Held {
-                trigger: Trigger::Second,
-                ..
-            }) => self.suppress_second = true,
-            _ => {}
+        if matches!(self.active, Some(Active::Held { .. })) {
+            self.suppressed = true;
         }
         self.active = None;
         self.recording_since = None;
         Actions::one(Action::StopRecording)
     }
 
+    /// Whether the configured chord is held in full. Always false for a lone-modifier
+    /// trigger, which has no main key to complete and never reaches this path.
     fn chord_satisfied(&self) -> bool {
+        let Some(chord) = self.config.trigger.chord() else {
+            return false;
+        };
         self.main_held
-            && ModifierFamily::ALL.iter().all(|&family| {
-                !self.config.primary.requires(family) || self.held.has_family(family)
-            })
+            && ModifierFamily::ALL
+                .iter()
+                .all(|&family| !chord.requires(family) || self.held.has_family(family))
     }
 
-    fn is_second_key(&self, key: Key) -> bool {
-        match (key, self.config.second_key) {
-            (Key::Modifier(modifier), Some(second)) => modifier == second.key(),
+    /// Whether this key *is* the trigger, which only a lone-modifier trigger can answer yes
+    /// to: a chord's modifiers mean nothing until its main key joins them.
+    fn is_lone_trigger(&self, key: Key) -> bool {
+        match (key, self.config.trigger.lone_key()) {
+            (Key::Modifier(modifier), Some(trigger)) => modifier == trigger,
             _ => false,
         }
     }
@@ -629,7 +632,7 @@ mod tests {
 
     use super::{Action, Event, HotkeyMachine, PanelKey};
     use crate::config::{HotkeyConfig, Mode};
-    use crate::keys::{Chord, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
+    use crate::keys::{Chord, Key, MainKey, ModifierFamily, ModifierKey, Trigger};
 
     const CTRL_L: Key = Key::Modifier(ModifierKey::CtrlLeft);
     const CTRL_R: Key = Key::Modifier(ModifierKey::CtrlRight);
@@ -652,22 +655,30 @@ mod tests {
             }
         }
 
-        fn hold_mode() -> Self {
+        /// The shipped configuration: the right Ctrl on its own, hold to talk.
+        fn with_right_ctrl() -> Self {
             Self::new(HotkeyConfig::default())
         }
 
-        fn toggle_mode() -> Self {
-            Self::new(HotkeyConfig {
-                mode: Mode::Toggle,
-                ..HotkeyConfig::default()
-            })
+        /// `Ctrl+Alt+Space`, hold to talk.
+        ///
+        /// Every chord test asks for this by name, because the default trigger stopped being
+        /// a chord on 2026-09-14: a machine on the defaults has no main key at all.
+        fn with_chord() -> Self {
+            Self::new(Self::chord_config(Mode::Hold))
         }
 
-        fn with_second_key() -> Self {
-            Self::new(HotkeyConfig {
-                second_key: Some(ModifierOnly::RIGHT_CTRL),
+        /// The same chord, tap to toggle — the only shape the latch belongs to.
+        fn toggle_chord() -> Self {
+            Self::new(Self::chord_config(Mode::Toggle))
+        }
+
+        fn chord_config(mode: Mode) -> HotkeyConfig {
+            HotkeyConfig {
+                mode,
+                trigger: Trigger::Chord(Chord::ctrl_alt_space()),
                 ..HotkeyConfig::default()
-            })
+            }
         }
 
         fn at(&self, ms: u64) -> Instant {
@@ -741,7 +752,7 @@ mod tests {
 
     #[test]
     fn hold_a_tap_under_the_threshold_discards_and_opens_the_panel_idle() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert_eq!(
             h.release_chord(120),
@@ -753,7 +764,7 @@ mod tests {
 
     #[test]
     fn hold_a_real_press_records_from_the_press_and_stops_on_release() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(
             h.press_chord(0),
             vec![Action::StartRecording],
@@ -766,7 +777,7 @@ mod tests {
 
     #[test]
     fn hold_the_press_length_is_measured_to_the_release_not_to_the_last_key_down() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         // Space first, then the modifiers: the press only counts from the moment the chord
         // is complete, which is the last key down.
         assert!(h.down(SPACE, 0).is_empty());
@@ -783,7 +794,7 @@ mod tests {
 
     #[test]
     fn toggle_a_tap_starts_and_the_next_tap_stops() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(
             h.release_chord(40).is_empty(),
@@ -802,7 +813,7 @@ mod tests {
 
     #[test]
     fn toggle_a_press_past_the_takeover_behaves_as_hold_to_talk() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert_eq!(
             h.release_chord(1_500),
@@ -814,7 +825,7 @@ mod tests {
 
     #[test]
     fn toggle_a_slow_second_tap_is_still_one_tap() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(h.release_chord(100).is_empty());
         // The second tap is held for two seconds — past the takeover — but the recording
@@ -824,19 +835,19 @@ mod tests {
         assert!(!h.machine.is_recording());
     }
 
-    // ---- the second key --------------------------------------------------------------
+    // ---- a lone-modifier trigger ------------------------------------------------------
 
     #[test]
-    fn second_key_alone_is_a_clean_hold_to_talk() {
-        let mut h = Harness::with_second_key();
+    fn lone_modifier_alone_is_a_clean_hold_to_talk() {
+        let mut h = Harness::with_right_ctrl();
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
         assert_eq!(h.up(CTRL_R, 3_000), vec![Action::StopRecording]);
         assert!(!h.machine.is_recording());
     }
 
     #[test]
-    fn second_key_tapped_under_the_threshold_discards_like_the_chord_does() {
-        let mut h = Harness::with_second_key();
+    fn lone_modifier_tapped_under_the_threshold_discards_like_a_chord_does() {
+        let mut h = Harness::with_right_ctrl();
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
         assert_eq!(
             h.up(CTRL_R, 90),
@@ -845,8 +856,8 @@ mod tests {
     }
 
     #[test]
-    fn second_key_that_turns_into_ctrl_c_discards_and_is_ignored_until_released() {
-        let mut h = Harness::with_second_key();
+    fn lone_modifier_that_turns_into_ctrl_c_discards_and_is_ignored_until_released() {
+        let mut h = Harness::with_right_ctrl();
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
         assert_eq!(
             h.other_key(80),
@@ -868,22 +879,9 @@ mod tests {
     }
 
     #[test]
-    fn second_key_does_not_double_start_while_the_chord_is_recording() {
-        let mut h = Harness::with_second_key();
-        assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
-        assert!(
-            h.down(CTRL_R, 300).is_empty(),
-            "the other trigger's events are ignored while one recording is live"
-        );
-        assert!(h.up(CTRL_R, 400).is_empty());
-        assert_eq!(h.release_chord(2_000), vec![Action::StopRecording]);
-    }
-
-    #[test]
-    fn second_key_is_hold_semantics_even_in_toggle_mode() {
+    fn lone_modifier_is_hold_semantics_even_in_toggle_mode() {
         let mut h = Harness::new(HotkeyConfig {
             mode: Mode::Toggle,
-            second_key: Some(ModifierOnly::RIGHT_CTRL),
             ..HotkeyConfig::default()
         });
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
@@ -894,11 +892,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lone_modifier_reset_mid_press_ends_it_the_way_a_release_would() {
+        let mut h = Harness::with_right_ctrl();
+        assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
+        assert_eq!(
+            h.reset(4_000),
+            vec![Action::StopRecording],
+            "focus went away mid-sentence; what was said is kept"
+        );
+        // The key-up that focus loss swallowed arrives at nothing, and the next press works.
+        assert!(h.up(CTRL_R, 4_100).is_empty());
+        assert_eq!(h.down(CTRL_R, 5_000), vec![Action::StartRecording]);
+        assert_eq!(
+            h.reset(5_100),
+            vec![Action::DiscardRecording, Action::OpenPanelIdle],
+            "a reset under the threshold discards, exactly as a release there would"
+        );
+    }
+
+    #[test]
+    fn right_ctrl_is_the_trigger_only_on_the_side_it_names() {
+        // Inside a chord either Ctrl counts; a lone-modifier trigger is one physical key,
+        // and the left one is somebody else's modifier.
+        let mut h = Harness::with_right_ctrl();
+        assert!(h.down(CTRL_L, 0).is_empty());
+        assert!(h.up(CTRL_L, 800).is_empty());
+        assert!(!h.machine.is_recording());
+        assert_eq!(h.down(CTRL_R, 1_000), vec![Action::StartRecording]);
+    }
+
+    #[test]
+    fn a_chord_trigger_ignores_a_lone_right_ctrl_press_entirely() {
+        let mut h = Harness::with_chord();
+        assert!(
+            h.down(CTRL_R, 0).is_empty(),
+            "a modifier of the chord is not the chord: nothing starts until Space joins it"
+        );
+        assert!(h.up(CTRL_R, 2_000).is_empty());
+        assert!(!h.machine.is_recording());
+        // And the chord itself still works afterwards.
+        assert_eq!(h.press_chord(3_000), vec![Action::StartRecording]);
+    }
+
+    #[test]
+    fn a_lone_key_trigger_never_starts_on_a_full_chord_press() {
+        let mut h = Harness::with_right_ctrl();
+        // Somebody who kept pressing the old default: Ctrl+Alt+Space, left-hand side.
+        assert!(h.down(CTRL_L, 0).is_empty());
+        assert!(h.down(ALT_L, 10).is_empty());
+        assert!(
+            h.down(SPACE, 20).is_empty(),
+            "the space bar completes nothing when the trigger has no main key"
+        );
+        assert!(!h.machine.is_recording());
+        assert!(h.release_chord(1_500).is_empty());
+
+        // And the same chord pressed *during* a right-Ctrl hold withdraws it rather than
+        // recording through it.
+        assert_eq!(h.down(CTRL_R, 2_000), vec![Action::StartRecording]);
+        assert_eq!(h.down(ALT_L, 2_050), vec![Action::DiscardRecording]);
+        assert!(h.down(SPACE, 2_100).is_empty());
+        assert!(!h.machine.is_recording());
+    }
+
     // ---- robustness ------------------------------------------------------------------
 
     #[test]
     fn auto_repeat_does_not_restart_the_recording() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         // Windows repeats WM_KEYDOWN for a held space bar roughly every 30 ms.
         for repeat in 1..=10 {
@@ -913,7 +975,7 @@ mod tests {
 
     #[test]
     fn an_up_without_a_down_is_ignored() {
-        let mut h = Harness::with_second_key();
+        let mut h = Harness::with_chord();
         assert!(h.up(SPACE, 0).is_empty());
         assert!(h.up(CTRL_L, 10).is_empty());
         assert!(h.up(CTRL_R, 20).is_empty());
@@ -924,7 +986,7 @@ mod tests {
 
     #[test]
     fn reset_on_focus_loss_ends_a_live_recording() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert_eq!(
             h.reset(4_000),
@@ -940,7 +1002,7 @@ mod tests {
 
     #[test]
     fn reset_during_a_press_too_short_to_be_a_sentence_discards_it() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert_eq!(
             h.reset(100),
@@ -951,7 +1013,7 @@ mod tests {
 
     #[test]
     fn reset_leaves_a_toggle_latch_alone() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(h.release_chord(80).is_empty());
         assert!(
@@ -964,7 +1026,7 @@ mod tests {
 
     #[test]
     fn the_safety_timeout_stops_a_press_whose_release_never_came() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(
             h.tick(120_000).is_empty(),
@@ -986,8 +1048,8 @@ mod tests {
     }
 
     #[test]
-    fn the_safety_timeout_also_ends_a_stuck_second_key() {
-        let mut h = Harness::with_second_key();
+    fn the_safety_timeout_also_ends_a_stuck_lone_modifier() {
+        let mut h = Harness::with_right_ctrl();
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
         assert_eq!(h.tick(300_001), vec![Action::StopRecording]);
         assert!(h.up(CTRL_R, 310_000).is_empty());
@@ -996,7 +1058,7 @@ mod tests {
 
     #[test]
     fn the_safety_timeout_reaches_a_toggle_latch_too() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(h.release_chord(60).is_empty());
         assert_eq!(
@@ -1020,7 +1082,7 @@ mod tests {
             [SPACE, CTRL_R, ALT_L],
         ];
         for order in orders {
-            let mut h = Harness::hold_mode();
+            let mut h = Harness::with_chord();
             let mut actions = Vec::new();
             let mut when = 0_u64;
             for key in order {
@@ -1039,7 +1101,7 @@ mod tests {
 
     #[test]
     fn ctrl_space_without_alt_never_triggers() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert!(h.down(CTRL_L, 0).is_empty());
         assert!(
             h.down(SPACE, 50).is_empty(),
@@ -1055,7 +1117,7 @@ mod tests {
         // Ctrl+Alt+Shift+Space still contains Ctrl+Alt+Space. The chord is a requirement,
         // not an exact match — a user holding Shift for the next capital letter still
         // dictates.
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert!(h.down(SHIFT_L, 0).is_empty());
         assert!(h.down(CTRL_L, 10).is_empty());
         assert!(h.down(ALT_L, 20).is_empty());
@@ -1066,10 +1128,10 @@ mod tests {
     #[test]
     fn a_chord_on_a_letter_key_works_the_same_way() {
         let mut h = Harness::new(HotkeyConfig {
-            primary: Chord::new(
+            trigger: Trigger::Chord(Chord::new(
                 &[ModifierFamily::Ctrl, ModifierFamily::Shift],
                 MainKey::Letter('D'),
-            ),
+            )),
             ..HotkeyConfig::default()
         });
         let d = Key::Main(MainKey::Letter('d'));
@@ -1081,7 +1143,7 @@ mod tests {
 
     #[test]
     fn a_named_key_that_belongs_to_no_trigger_is_treated_as_any_other_key() {
-        let mut h = Harness::with_second_key();
+        let mut h = Harness::with_right_ctrl();
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
         assert_eq!(
             h.down(Key::Main(MainKey::Letter('c')), 50),
@@ -1094,7 +1156,7 @@ mod tests {
 
     #[test]
     fn the_panel_keys_mean_nothing_until_the_panel_is_up() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_right_ctrl();
         assert!(!h.machine.panel_keys());
 
         for key in [PanelKey::Transfer, PanelKey::Cancel, PanelKey::Copy] {
@@ -1117,8 +1179,8 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_key_withdraws_a_second_key_press_the_way_any_other_key_does() {
-        let mut h = Harness::with_second_key();
+    fn a_panel_key_withdraws_a_lone_modifier_press_the_way_any_other_key_does() {
+        let mut h = Harness::with_right_ctrl();
         h.machine.set_panel_keys(true);
 
         assert_eq!(h.down(CTRL_R, 0), vec![Action::StartRecording]);
@@ -1132,7 +1194,7 @@ mod tests {
 
     #[test]
     fn a_panel_key_leaves_a_chord_recording_alone() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         h.machine.set_panel_keys(true);
 
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
@@ -1152,7 +1214,7 @@ mod tests {
 
     #[test]
     fn re_record_starts_a_latched_recording_in_toggle_mode_and_the_next_tap_stops_it() {
-        let mut h = Harness::toggle_mode();
+        let mut h = Harness::toggle_chord();
         assert_eq!(h.rerecord(0), vec![Action::StartRecording]);
         assert!(h.machine.is_recording());
 
@@ -1164,22 +1226,31 @@ mod tests {
 
     #[test]
     fn re_record_does_nothing_in_hold_mode_or_while_something_is_already_recording() {
-        let mut h = Harness::hold_mode();
+        let mut h = Harness::with_chord();
         assert!(
             h.rerecord(0).is_empty(),
             "a hold-to-talk recording nobody is pressing would have no end"
         );
         assert!(!h.machine.is_recording());
 
-        let mut toggling = Harness::toggle_mode();
+        let mut toggling = Harness::toggle_chord();
         assert_eq!(toggling.press_chord(0), vec![Action::StartRecording]);
         assert!(toggling.release_chord(60).is_empty());
         assert!(toggling.rerecord(500).is_empty(), "nothing starts twice");
+
+        // Toggle mode, but the trigger is a lone modifier — which never latches, so a
+        // recording started here would run to the safety ceiling with no way to end it.
+        let mut lone = Harness::new(HotkeyConfig {
+            mode: Mode::Toggle,
+            ..HotkeyConfig::default()
+        });
+        assert!(lone.rerecord(0).is_empty());
+        assert!(!lone.machine.is_recording());
     }
 
     #[test]
     fn other_keys_do_not_disturb_a_chord_recording() {
-        let mut h = Harness::with_second_key();
+        let mut h = Harness::with_chord();
         assert_eq!(h.press_chord(0), vec![Action::StartRecording]);
         assert!(
             h.other_key(500).is_empty(),

@@ -13,6 +13,15 @@
 //! default, an unknown field is ignored, and `version` exists to be read by a future
 //! migration rather than to reject anything today.
 //!
+//! **The first real migration is `hotkey`, and it needed no version number.** The trigger was
+//! two settings until 2026-09-14 — a chord plus a `second_key` switch — and it is one now.
+//! [`HotkeySettingsOnDisk`] reads all three spellings and resolves them, which works off the
+//! fields that are present rather than off `version`: a file that carries `trigger` is a new
+//! one whatever its version says, and a file that does not is an old one for the same reason.
+//! [`VERSION`] therefore stays at 1. A migration that genuinely cannot be told from the
+//! document — two builds writing the same field with different meanings — is what the number
+//! is being kept for.
+//!
 //! **A value out of range is clamped, never rejected.** [`Settings::validated`] moves a cap
 //! of 600 s to 300 and says so in the log. A settings file that refuses to load is a tray
 //! application that will not start, and no bad number is worth that.
@@ -34,7 +43,7 @@ use dile_capture::{CaptureConfig, MAX_CAP_SECS, MIN_CAP_SECS};
 use dile_core::cleanup::Strictness;
 use dile_core::dictionary::{Dictionary, Entry};
 use dile_engine_proto::Device;
-use dile_hotkey::{Chord, HotkeyConfig, Mode, ModifierOnly};
+use dile_hotkey::{HotkeyConfig, Mode, Trigger};
 use serde::{Deserialize, Serialize};
 
 /// The file the settings live in, inside the application's config directory.
@@ -45,16 +54,18 @@ pub const FILE: &str = "settings.json";
 
 /// The schema version this build writes.
 ///
-/// Read by a future migration and by nothing today. It is here from the first release so
-/// that the first migration has a number to branch on instead of guessing from which fields
-/// are present.
+/// Read by nothing but the log line in [`Settings::load`]. It is here from the first release
+/// so that a migration which cannot be read off the document itself has a number to branch
+/// on; the `hotkey` migration of 2026-09-14 could be, so it left this alone. See the module
+/// documentation.
 pub const VERSION: u32 = 1;
 
-/// The default chord, as it is written down.
+/// The default trigger, as it is written down.
 ///
-/// `docs/PROJECT.md` §7: `Ctrl+Alt+Space`. It is not an IME toggle, not reserved by Windows,
-/// and no mainstream editor binds it.
-pub const DEFAULT_CHORD: &str = "Ctrl+Alt+Space";
+/// `docs/PROJECT.md` §3: the right Ctrl, held on its own. Holding a three-key chord for a
+/// minute of dictation is tiring, and a lone modifier is the only key a hand can rest on that
+/// long — so a chord is what a user changes this to, not what they start with.
+pub const DEFAULT_TRIGGER: &str = "RightCtrl";
 
 /// The chord that is excluded permanently, whatever a settings file says.
 ///
@@ -188,27 +199,74 @@ impl Language {
 }
 
 /// The trigger.
+///
+/// Two fields, and there used to be three: the trigger is one setting now rather than a chord
+/// plus a second key that could be armed beside it. [`HotkeySettingsOnDisk`] is what makes a
+/// file written by that build still load.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "HotkeySettingsOnDisk")]
 pub struct HotkeySettings {
-    /// The chord, as [`dile_hotkey::Chord`] writes it: `Ctrl+Alt+Space`.
-    pub chord: String,
+    /// The trigger, as [`dile_hotkey::Trigger`] writes it: `RightCtrl`, or `Ctrl+Alt+Space`.
+    pub trigger: String,
     /// Hold to talk, or tap to toggle.
     pub mode: HotkeyMode,
-    /// Whether the optional second trigger — the right Ctrl, on its own — is armed.
-    ///
-    /// A `bool` rather than a key name because §3 names the key: switching it on claims that
-    /// key for dictation, and the only key worth claiming is the side almost nothing else is
-    /// bound to.
-    pub second_key: bool,
 }
 
 impl Default for HotkeySettings {
     fn default() -> Self {
         HotkeySettings {
-            chord: DEFAULT_CHORD.to_owned(),
+            trigger: DEFAULT_TRIGGER.to_owned(),
             mode: HotkeyMode::Hold,
-            second_key: false,
+        }
+    }
+}
+
+/// [`HotkeySettings`] as a file on disk may spell it, including the two keys the build
+/// before 2026-09-14 wrote.
+///
+/// **The legacy keys are read and never written.** `serde(from)` means every path into
+/// `HotkeySettings` goes through here, and `HotkeySettings` serializes itself — so a file that
+/// carries `chord` and `second_key` loses them the first time anything saves, which is the
+/// whole point of resolving them once on the way in rather than carrying two spellings around
+/// the application for a release.
+///
+/// Every field is an `Option` because the three questions are "did the file say?", not "what
+/// did it say?": a `trigger` that is present wins outright, and the pair behind it is only
+/// consulted when it is not.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct HotkeySettingsOnDisk {
+    /// What this build writes.
+    trigger: Option<String>,
+    /// Hold or toggle. Unchanged across the migration.
+    mode: Option<HotkeyMode>,
+    /// The chord, as the build before 2026-09-14 wrote it.
+    chord: Option<String>,
+    /// Whether that build's optional second trigger — the right Ctrl — was armed.
+    second_key: Option<bool>,
+}
+
+impl From<HotkeySettingsOnDisk> for HotkeySettings {
+    fn from(disk: HotkeySettingsOnDisk) -> Self {
+        let HotkeySettingsOnDisk {
+            trigger,
+            mode,
+            chord,
+            second_key,
+        } = disk;
+        let trigger = trigger.unwrap_or_else(|| match (second_key, chord) {
+            // The second key was armed, so it already *was* this person's trigger — the hand
+            // test that removed the setting is the one that found out why. It is the trigger
+            // now, and the chord they never pressed goes with the setting.
+            (Some(true), _) => DEFAULT_TRIGGER.to_owned(),
+            // Otherwise the chord was the whole trigger, and it still is.
+            (_, Some(chord)) => chord,
+            // Neither key: a file from a build older than both, or a hand-written one.
+            _ => DEFAULT_TRIGGER.to_owned(),
+        });
+        HotkeySettings {
+            trigger,
+            mode: mode.unwrap_or_default(),
         }
     }
 }
@@ -441,12 +499,15 @@ impl Settings {
             self.cleanup.auto_transfer_ms = delay;
         }
 
-        if self.hotkey.chord.parse::<Chord>().is_err() {
+        // Parseability only. Whether a *readable* trigger is one this product accepts — the
+        // excluded chord, a chord with no modifier — is the settings window's rule, because
+        // refusing one here would mean a file nobody can fix by hand.
+        if self.hotkey.trigger.parse::<Trigger>().is_err() {
             log::warn!(
-                "the stored chord {:?} is not one this build can read, so the default is in use",
-                self.hotkey.chord
+                "the stored trigger {:?} is not one this build can read, so the default is in use",
+                self.hotkey.trigger
             );
-            self.hotkey.chord = DEFAULT_CHORD.to_owned();
+            self.hotkey.trigger = DEFAULT_TRIGGER.to_owned();
         }
 
         // A dictionary entry with no canonical spelling has nothing to correct anything to
@@ -464,14 +525,11 @@ impl Settings {
         self
     }
 
-    /// The chord, parsed. Falls back to the default, which [`Settings::validated`] has
+    /// The trigger, parsed. Falls back to the default, which [`Settings::validated`] has
     /// already put in place for anything that was stored wrong.
     #[must_use]
-    pub fn chord(&self) -> Chord {
-        self.hotkey
-            .chord
-            .parse()
-            .unwrap_or_else(|_| Chord::ctrl_alt_space())
+    pub fn trigger(&self) -> Trigger {
+        self.hotkey.trigger.parse().unwrap_or_default()
     }
 
     /// The trigger, as `dile-hotkey` wants it.
@@ -479,8 +537,7 @@ impl Settings {
     pub fn hotkey_config(&self) -> HotkeyConfig {
         HotkeyConfig {
             mode: self.hotkey.mode.into(),
-            primary: self.chord(),
-            second_key: self.hotkey.second_key.then_some(ModifierOnly::RIGHT_CTRL),
+            trigger: self.trigger(),
             ..HotkeyConfig::default()
         }
     }
@@ -522,13 +579,13 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::{
-        CleanupLevel, DEFAULT_AUTO_TRANSFER_MS, DEFAULT_CAP_SECS, DEFAULT_CHORD,
-        DEFAULT_PRE_ROLL_MS, DictionaryEntry, HotkeyMode, LEVEL_INTERVAL_MS, Language,
+        CleanupLevel, DEFAULT_AUTO_TRANSFER_MS, DEFAULT_CAP_SECS, DEFAULT_PRE_ROLL_MS,
+        DEFAULT_TRIGGER, DictionaryEntry, HotkeyMode, LEVEL_INTERVAL_MS, Language,
         MAX_AUTO_TRANSFER_MS, MAX_PRE_ROLL_MS, Settings, VERSION,
     };
     use dile_core::cleanup::Strictness;
     use dile_engine_proto::Device;
-    use dile_hotkey::{Chord, Mode, ModifierOnly};
+    use dile_hotkey::{Mode, Trigger};
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -545,10 +602,13 @@ mod tests {
         let settings = Settings::default();
 
         assert_eq!(settings.version, VERSION);
-        assert_eq!(settings.hotkey.chord, DEFAULT_CHORD);
-        assert_eq!(settings.chord(), Chord::ctrl_alt_space());
+        assert_eq!(settings.hotkey.trigger, DEFAULT_TRIGGER);
+        assert_eq!(settings.trigger(), Trigger::RIGHT_CTRL);
+        assert!(
+            settings.trigger().is_lone_key(),
+            "the shipped trigger is a key a hand can rest on, not a chord"
+        );
         assert_eq!(settings.hotkey.mode, HotkeyMode::Hold);
-        assert!(!settings.hotkey.second_key);
 
         assert_eq!(settings.capture.cap_secs, DEFAULT_CAP_SECS);
         assert_eq!(settings.capture.pre_roll_ms, DEFAULT_PRE_ROLL_MS);
@@ -580,21 +640,95 @@ mod tests {
     fn the_two_crates_get_the_configuration_they_expect() {
         let mut settings = Settings::default();
         settings.hotkey.mode = HotkeyMode::Toggle;
-        settings.hotkey.second_key = true;
-        settings.hotkey.chord = "Shift+F5".to_owned();
+        settings.hotkey.trigger = "Shift+F5".to_owned();
         settings.capture.device = Some("a device id".to_owned());
 
         let hotkey = settings.hotkey_config();
         assert_eq!(hotkey.mode, Mode::Toggle);
-        assert_eq!(hotkey.second_key, Some(ModifierOnly::RIGHT_CTRL));
         assert_eq!(
-            hotkey.primary,
-            "Shift+F5".parse::<Chord>().expect("a chord")
+            hotkey.trigger,
+            "Shift+F5".parse::<Trigger>().expect("a chord")
         );
+
+        // And the shipped trigger, which is the other shape entirely.
+        settings.hotkey.trigger = DEFAULT_TRIGGER.to_owned();
+        assert_eq!(settings.hotkey_config().trigger, Trigger::RIGHT_CTRL);
 
         let capture = settings.capture_config();
         assert_eq!(capture.device.as_deref(), Some("a device id"));
         assert_eq!(capture.cap_secs, DEFAULT_CAP_SECS);
+    }
+
+    #[test]
+    fn a_file_from_the_build_with_two_triggers_resolves_to_the_one_it_meant() {
+        let directory = temporary_directory("legacy-hotkey");
+        std::fs::create_dir_all(&directory).expect("create");
+        let path = directory.join("settings.json");
+
+        // The second key was armed, so that key *was* the trigger: it is the trigger now,
+        // and the chord goes with the setting that offered both.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"hotkey":{"chord":"Ctrl+Alt+Space","mode":"hold","second_key":true}}"#,
+        )
+        .expect("write a legacy file");
+        let settings = Settings::load(&path);
+        assert_eq!(settings.hotkey.trigger, DEFAULT_TRIGGER);
+        assert_eq!(settings.trigger(), Trigger::RIGHT_CTRL);
+        assert_eq!(settings.hotkey.mode, HotkeyMode::Hold);
+
+        // It was not armed, so the chord was the whole trigger and still is — the mode with
+        // it, which the migration does not touch.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"hotkey":{"chord":"Shift+F5","mode":"toggle","second_key":false}}"#,
+        )
+        .expect("write a legacy file");
+        let settings = Settings::load(&path);
+        assert_eq!(settings.hotkey.trigger, "Shift+F5");
+        assert_eq!(settings.hotkey.mode, HotkeyMode::Toggle);
+
+        // A file that carries both spellings is a new one: `trigger` wins and the legacy
+        // keys are ignored rather than argued with.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"hotkey":{"trigger":"LeftAlt","chord":"Shift+F5","second_key":true}}"#,
+        )
+        .expect("write a mixed file");
+        let settings = Settings::load(&path);
+        assert_eq!(settings.hotkey.trigger, "LeftAlt");
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_legacy_keys_are_gone_from_the_file_the_moment_anything_saves() {
+        let directory = temporary_directory("legacy-drop");
+        std::fs::create_dir_all(&directory).expect("create");
+        let path = directory.join("settings.json");
+
+        std::fs::write(
+            &path,
+            r#"{"version":1,"hotkey":{"chord":"Shift+F5","second_key":false}}"#,
+        )
+        .expect("write a legacy file");
+
+        let settings = Settings::load(&path);
+        settings.save(&path).expect("write the settings");
+        let written = std::fs::read_to_string(&path).expect("read it back");
+
+        assert!(
+            written.contains("\"trigger\": \"Shift+F5\""),
+            "the resolved trigger is what is written: {written}"
+        );
+        assert!(
+            !written.contains("chord") && !written.contains("second_key"),
+            "a spelling this build does not read must not survive a save: {written}"
+        );
+        // And the document reads back as itself, which is what makes the drop safe.
+        assert_eq!(Settings::load(&path), settings);
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -650,7 +784,7 @@ mod tests {
         let settings = Settings::load(&path);
         assert_eq!(settings.capture.cap_secs, 90);
         assert_eq!(settings.capture.pre_roll_ms, DEFAULT_PRE_ROLL_MS);
-        assert_eq!(settings.hotkey.chord, DEFAULT_CHORD);
+        assert_eq!(settings.hotkey.trigger, DEFAULT_TRIGGER);
         assert_eq!(settings.cleanup.strictness, CleanupLevel::Medium);
         assert!(settings.dictionary.is_empty());
 
@@ -669,7 +803,7 @@ mod tests {
         settings.capture.cap_secs = 600;
         settings.capture.pre_roll_ms = 60_000;
         settings.cleanup.auto_transfer_ms = 30_000;
-        settings.hotkey.chord = "Ctrl+Banana".to_owned();
+        settings.hotkey.trigger = "Ctrl+Banana".to_owned();
         settings.dictionary = vec![
             DictionaryEntry {
                 canonical: "  ".to_owned(),
@@ -685,7 +819,7 @@ mod tests {
         assert_eq!(validated.capture.cap_secs, 300);
         assert_eq!(validated.capture.pre_roll_ms, MAX_PRE_ROLL_MS);
         assert_eq!(validated.cleanup.auto_transfer_ms, MAX_AUTO_TRANSFER_MS);
-        assert_eq!(validated.hotkey.chord, DEFAULT_CHORD);
+        assert_eq!(validated.hotkey.trigger, DEFAULT_TRIGGER);
         assert_eq!(validated.dictionary.len(), 1);
         assert_eq!(validated.dictionary[0].canonical, "cron");
 

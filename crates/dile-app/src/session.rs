@@ -149,13 +149,12 @@ pub fn start(
     let settings = store.get();
     let listener = HotkeyListener::spawn(settings.hotkey_config())?;
     // The panel arms and disarms its three keys on whichever hook is installed right now,
-    // and this is that hook. Re-attached in `reapply` every time the chord changes.
+    // and this is that hook. Re-attached in `reapply` every time the trigger changes.
     panel.attach(listener.remote());
     log::info!(
-        "hotkey hook installed: {} in {:?} mode, second key {}",
-        settings.hotkey.chord,
-        settings.hotkey.mode,
-        settings.hotkey.second_key
+        "hotkey hook installed: {} in {:?} mode",
+        settings.hotkey.trigger,
+        settings.hotkey.mode
     );
 
     // A flag rather than a channel: the listener's action channel is the one this thread
@@ -347,10 +346,9 @@ fn reapply(
                 // three keys would be armed on a thread that has ended.
                 panel.attach(listener.remote());
                 log::info!(
-                    "the hotkey is now {} in {:?} mode, second key {}",
-                    after.hotkey.chord,
-                    after.hotkey.mode,
-                    after.hotkey.second_key
+                    "the hotkey is now {} in {:?} mode",
+                    after.hotkey.trigger,
+                    after.hotkey.mode
                 );
             }
             Err(error) => log::error!(

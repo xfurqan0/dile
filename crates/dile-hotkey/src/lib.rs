@@ -12,6 +12,12 @@
 //! | The rules | [`state`] | nothing but `std` |
 //! | The operating system | [`listener`] | `handy-keys`, Windows only |
 //!
+//! **One trigger, two shapes.** [`Trigger`] is either one modifier key held on its own — the
+//! right Ctrl, which is what Dile ships — or a chord such as `Ctrl+Alt+Space`, which is what a
+//! user changes it to. Until 2026-09-14 there were two settings, a chord plus an optional
+//! modifier-only "second key"; the maintainer's hand test of the 0.1.0 installer removed the
+//! second one by making it the first. The rules the two shapes differ under are in [`state`].
+//!
 //! Everything that is hard about a push-to-talk trigger is a timing question — was that a
 //! tap or a sentence, did the release arrive, is this the eleventh auto-repeat of a key that
 //! is already down — and a global keyboard hook is the worst place in the system to test a
@@ -56,7 +62,9 @@ pub use config::{
     DEFAULT_HOLD_TAKEOVER_MS, DEFAULT_MAX_HOLD_MS, DEFAULT_PRESS_THRESHOLD_MS, HotkeyConfig, Mode,
 };
 pub use error::Error;
-pub use keys::{Chord, ChordParseError, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
+pub use keys::{
+    Chord, ChordParseError, Key, MainKey, ModifierFamily, ModifierKey, ModifierOnly, Trigger,
+};
 pub use state::{Action, Actions, Event, HotkeyMachine, PanelKey};
 
 #[cfg(target_os = "windows")]
@@ -66,7 +74,7 @@ pub mod capture;
 pub mod listener;
 
 #[cfg(target_os = "windows")]
-pub use capture::{Capture, next_chord};
+pub use capture::{Capture, next_trigger};
 
 #[cfg(target_os = "windows")]
 pub use listener::{Emitted, HotkeyListener, Remote};

@@ -13,9 +13,9 @@ use std::str::FromStr;
 /// A modifier key family, without a side.
 ///
 /// A chord is written in families rather than in physical keys because a user pressing the
-/// right Ctrl means the same thing as one pressing the left Ctrl. The second key of
-/// `docs/PROJECT.md` §3 is the deliberate exception: it names a side, and [`ModifierKey`]
-/// is how it does so.
+/// right Ctrl means the same thing as one pressing the left Ctrl. A lone-modifier trigger —
+/// [`Trigger::Key`], and the default of `docs/PROJECT.md` §3 — is the deliberate exception:
+/// it names a side, and [`ModifierKey`] is how it does so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ModifierFamily {
     /// Either Ctrl key.
@@ -49,7 +49,7 @@ impl ModifierFamily {
 pub enum ModifierKey {
     /// Left Ctrl.
     CtrlLeft,
-    /// Right Ctrl — the key `docs/PROJECT.md` §3 offers as the optional second trigger.
+    /// Right Ctrl — the key `docs/PROJECT.md` §3 makes the shipped trigger.
     CtrlRight,
     /// Left Alt.
     AltLeft,
@@ -204,9 +204,15 @@ impl Chord {
         }
     }
 
-    /// `Ctrl+Alt+Space`, the default of `docs/PROJECT.md` §7.
+    /// `Ctrl+Alt+Space` — the chord Dile shipped as its default until 2026-09-14, and the
+    /// one a user who wants a chord is most likely to reach for.
     ///
-    /// It is not an IME toggle, not reserved by Windows, and no mainstream editor binds it.
+    /// **It is no longer the default trigger.** That is [`Trigger::RIGHT_CTRL`]: a chord held
+    /// for a minute of dictation is tiring, and a lone modifier is the only key a hand can
+    /// rest on that long. This chord stays because it is still a good chord — not an IME
+    /// toggle, not reserved by Windows, bound by no mainstream editor — and because it is
+    /// what [`Chord::default`] answers with.
+    ///
     /// `Ctrl+Space` is excluded permanently: the IME swallows that chord before a low-level
     /// hook ever sees it.
     #[must_use]
@@ -233,19 +239,20 @@ impl Default for Chord {
     }
 }
 
-/// The optional second trigger: one modifier key, pressed on its own.
+/// A trigger made of one modifier key, pressed on its own.
 ///
-/// A side is part of its identity. `docs/PROJECT.md` §3 keeps it "still recommended for long
-/// dictation, because holding a three-key chord for 60 s is tiring", and a lone modifier is
-/// the only key a hand can rest on that long.
+/// A side is part of its identity: the right Ctrl and the left Ctrl are different triggers,
+/// where inside a chord they are the same modifier. `docs/PROJECT.md` §3 makes the right
+/// Ctrl the shipped trigger because holding a three-key chord for a minute of dictation is
+/// tiring, and a lone modifier is the only key a hand can rest on that long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModifierOnly(ModifierKey);
 
 impl ModifierOnly {
-    /// Right Ctrl — the key §3 names.
+    /// Right Ctrl — the key §3 names, and the shipped default.
     pub const RIGHT_CTRL: Self = Self(ModifierKey::CtrlRight);
 
-    /// A second trigger on any modifier key.
+    /// A trigger on any modifier key.
     #[must_use]
     pub const fn new(key: ModifierKey) -> Self {
         Self(key)
@@ -255,6 +262,89 @@ impl ModifierOnly {
     #[must_use]
     pub const fn key(self) -> ModifierKey {
         self.0
+    }
+}
+
+impl Default for ModifierOnly {
+    fn default() -> Self {
+        Self::RIGHT_CTRL
+    }
+}
+
+/// What the user holds to dictate: either a chord, or one modifier key on its own.
+///
+/// **One trigger, two shapes.** Until 2026-09-14 there were two settings — a chord, plus an
+/// optional modifier-only "second key" that was off by default — and the maintainer's hand
+/// test of the 0.1.0 installer removed the second one by making it the first: the trigger is
+/// **Right Ctrl**, and a chord is what you change it to if you want one.
+///
+/// The press-length threshold applies to both, but a lone modifier is hold-to-talk in both
+/// modes and a chord is not. `crate::state` explains why: a lone modifier cannot be told from
+/// the opening of `Ctrl+C` until another key arrives, so the machine starts a recording and
+/// withdraws it, and latching a recording to a key a hand rests on would be a trap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Trigger {
+    /// Modifiers plus a main key, all held at once.
+    Chord(Chord),
+    /// One modifier key, held on its own. Its side is part of its identity.
+    Key(ModifierOnly),
+}
+
+impl Trigger {
+    /// Right Ctrl, held on its own — the default of `docs/PROJECT.md` §3.
+    pub const RIGHT_CTRL: Self = Self::Key(ModifierOnly::RIGHT_CTRL);
+
+    /// Whether this trigger is a lone modifier rather than a chord.
+    #[must_use]
+    pub const fn is_lone_key(self) -> bool {
+        matches!(self, Self::Key(_))
+    }
+
+    /// The main key a chord trigger ends with; `None` for a lone modifier.
+    #[must_use]
+    pub const fn main_key(self) -> Option<MainKey> {
+        match self {
+            Self::Chord(chord) => Some(chord.key()),
+            Self::Key(_) => None,
+        }
+    }
+
+    /// The chord, when this trigger is one.
+    #[must_use]
+    pub const fn chord(self) -> Option<Chord> {
+        match self {
+            Self::Chord(chord) => Some(chord),
+            Self::Key(_) => None,
+        }
+    }
+
+    /// The physical key, when this trigger is a lone modifier.
+    #[must_use]
+    pub const fn lone_key(self) -> Option<ModifierKey> {
+        match self {
+            Self::Chord(_) => None,
+            Self::Key(only) => Some(only.key()),
+        }
+    }
+
+    /// Whether a modifier is involved at all.
+    ///
+    /// A lone modifier always is, by construction. A chord may not be — `F9` is a chord with
+    /// no modifier — and a chord that is not is the one the application refuses, because a
+    /// bare key as a global hotkey takes that key away from every application on the machine.
+    /// The rule lives there rather than here: this crate reports what a trigger *is*.
+    #[must_use]
+    pub const fn has_modifier(self) -> bool {
+        match self {
+            Self::Chord(chord) => chord.has_modifier(),
+            Self::Key(_) => true,
+        }
+    }
+}
+
+impl Default for Trigger {
+    fn default() -> Self {
+        Self::RIGHT_CTRL
     }
 }
 
@@ -410,9 +500,144 @@ impl Chord {
     }
 }
 
+/// Every physical modifier key, with the word that names its side.
+///
+/// The side is written **first** — `RightCtrl` — because that is the half that distinguishes
+/// one of these from the other seven, and a settings file is read by eye more often than it
+/// is parsed. The family half comes out of [`MODIFIER_NAMES`], so a chord and a lone key
+/// cannot end up spelling `Ctrl` two different ways.
+const MODIFIER_KEY_SIDES: [(ModifierKey, &str, &[&str]); 8] = [
+    (ModifierKey::CtrlLeft, "Left", LEFT),
+    (ModifierKey::CtrlRight, "Right", RIGHT),
+    (ModifierKey::AltLeft, "Left", LEFT),
+    (ModifierKey::AltRight, "Right", RIGHT),
+    (ModifierKey::ShiftLeft, "Left", LEFT),
+    (ModifierKey::ShiftRight, "Right", RIGHT),
+    (ModifierKey::MetaLeft, "Left", LEFT),
+    (ModifierKey::MetaRight, "Right", RIGHT),
+];
+
+/// The spellings that mean the left-hand key, already normalised.
+const LEFT: &[&str] = &["left", "l"];
+
+/// The spellings that mean the right-hand key, already normalised.
+const RIGHT: &[&str] = &["right", "r"];
+
+/// What a Turkish (and every other European) layout calls the right Alt.
+///
+/// The one alias that is neither a side word nor a family word, and it is here because a
+/// person writing down "the key next to the space bar on the right" writes `AltGr`.
+const ALT_GR: &str = "altgr";
+
+/// A trigger string with the punctuation and the case a person may have typed taken out.
+///
+/// Spaces, hyphens and underscores go, because `Right Ctrl`, `right-ctrl` and `RIGHT_CTRL`
+/// are one key and a settings file is a thing a human edits.
+fn normalized_key_name(name: &str) -> String {
+    name.chars()
+        .filter(|character| !matches!(character, ' ' | '\t' | '-' | '_'))
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+/// One physical modifier key from a written name, or `None`.
+///
+/// Both orders are read — `RightCtrl` and `CtrlRight` — because the parser's job is to
+/// accept what a person wrote, while `Display` is the single thing that decides how it is
+/// written back.
+fn parse_modifier_key(name: &str) -> Option<ModifierKey> {
+    let normal = normalized_key_name(name);
+    if normal == ALT_GR {
+        return Some(ModifierKey::AltRight);
+    }
+    for (key, _, sides) in MODIFIER_KEY_SIDES {
+        let families = MODIFIER_NAMES
+            .iter()
+            .find(|(family, _, _)| *family == key.family())
+            .map(|&(_, _, spellings)| spellings)?;
+        for side in sides {
+            for family in families {
+                if normal == format!("{side}{family}") || normal == format!("{family}{side}") {
+                    return Some(key);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// How a lone modifier key is written down: `RightCtrl`, `LeftShift`, `RightAlt`.
+impl fmt::Display for ModifierOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let key = self.key();
+        let side = MODIFIER_KEY_SIDES
+            .iter()
+            .find(|(candidate, _, _)| *candidate == key)
+            .map_or("", |&(_, side, _)| side);
+        let family = MODIFIER_NAMES
+            .iter()
+            .find(|(family, _, _)| *family == key.family())
+            .map_or("", |&(_, written, _)| written);
+        write!(f, "{side}{family}")
+    }
+}
+
+impl FromStr for ModifierOnly {
+    type Err = ChordParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim();
+        if name.is_empty() {
+            return Err(ChordParseError::Empty);
+        }
+        parse_modifier_key(name)
+            .map(ModifierOnly::new)
+            .ok_or_else(|| ChordParseError::UnknownKey(name.to_owned()))
+    }
+}
+
+/// How a trigger is written down: `RightCtrl`, or `Ctrl+Alt+Space`.
+impl fmt::Display for Trigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Trigger::Chord(chord) => chord.fmt(f),
+            Trigger::Key(key) => key.fmt(f),
+        }
+    }
+}
+
+/// The other direction, and **the `+` is what tells the two apart**.
+///
+/// A string with a `+` in it is a chord and is parsed as one; a string without is a lone
+/// modifier key. That rule is why `Ctrl` on its own is refused rather than guessed at: a
+/// chord needs a key to end with, and a lone modifier needs a side, and `Ctrl` is neither.
+impl FromStr for Trigger {
+    type Err = ChordParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim();
+        if name.is_empty() {
+            return Err(ChordParseError::Empty);
+        }
+        if name.contains('+') {
+            return name.parse().map(Trigger::Chord);
+        }
+        // A settings file written by a build that only knew chords can still carry a bare
+        // key here, so a name that is not a modifier falls through to the chord parser and
+        // comes back as a chord with no modifier — which the application refuses by name
+        // rather than by a parse error nobody can act on.
+        match name.parse::<ModifierOnly>() {
+            Ok(key) => Ok(Trigger::Key(key)),
+            Err(_) => name.parse().map(Trigger::Chord),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Chord, ChordParseError, MainKey, ModifierFamily, ModifierKey, ModifierOnly};
+    use super::{
+        Chord, ChordParseError, MainKey, ModifierFamily, ModifierKey, ModifierOnly, Trigger,
+    };
 
     #[test]
     fn every_modifier_key_owns_exactly_one_bit_of_its_family() {
@@ -561,11 +786,105 @@ mod tests {
     }
 
     #[test]
-    fn the_second_key_keeps_its_side() {
+    fn a_lone_modifier_trigger_keeps_its_side() {
         assert_eq!(ModifierOnly::RIGHT_CTRL.key(), ModifierKey::CtrlRight);
         assert_ne!(
             ModifierOnly::RIGHT_CTRL,
             ModifierOnly::new(ModifierKey::CtrlLeft)
         );
+    }
+
+    #[test]
+    fn the_default_trigger_is_right_ctrl_on_its_own() {
+        let trigger = Trigger::default();
+        assert_eq!(trigger, Trigger::RIGHT_CTRL);
+        assert_eq!(trigger.to_string(), "RightCtrl");
+        assert!(trigger.is_lone_key());
+        assert_eq!(trigger.lone_key(), Some(ModifierKey::CtrlRight));
+        assert_eq!(
+            trigger.main_key(),
+            None,
+            "a lone modifier ends with nothing"
+        );
+        assert_eq!(trigger.chord(), None);
+        assert!(
+            trigger.has_modifier(),
+            "a lone modifier is a modifier by construction"
+        );
+    }
+
+    #[test]
+    fn every_physical_modifier_key_has_one_spelling_and_survives_the_round_trip() {
+        let expected = [
+            (ModifierKey::CtrlLeft, "LeftCtrl"),
+            (ModifierKey::CtrlRight, "RightCtrl"),
+            (ModifierKey::AltLeft, "LeftAlt"),
+            (ModifierKey::AltRight, "RightAlt"),
+            (ModifierKey::ShiftLeft, "LeftShift"),
+            (ModifierKey::ShiftRight, "RightShift"),
+            (ModifierKey::MetaLeft, "LeftMeta"),
+            (ModifierKey::MetaRight, "RightMeta"),
+        ];
+        for (key, written) in expected {
+            let only = ModifierOnly::new(key);
+            assert_eq!(only.to_string(), written);
+            assert_eq!(
+                written.parse::<ModifierOnly>().expect(written),
+                only,
+                "{written} did not survive the round trip"
+            );
+            assert_eq!(
+                written.parse::<Trigger>().expect(written),
+                Trigger::Key(only)
+            );
+        }
+    }
+
+    #[test]
+    fn a_lone_modifier_a_person_typed_still_parses() {
+        for spelling in [
+            "RightCtrl",
+            "rightctrl",
+            "right ctrl",
+            "right-ctrl",
+            "RIGHT_CONTROL",
+            "CtrlRight",
+            "rctrl",
+            " rightctrl ",
+        ] {
+            assert_eq!(
+                spelling.parse::<Trigger>().expect(spelling),
+                Trigger::RIGHT_CTRL,
+                "{spelling} is the right Ctrl"
+            );
+        }
+        // The one alias that is not built from a side word and a family word.
+        assert_eq!(
+            "AltGr".parse::<Trigger>().expect("altgr"),
+            Trigger::Key(ModifierOnly::new(ModifierKey::AltRight))
+        );
+    }
+
+    #[test]
+    fn a_trigger_is_a_chord_when_it_has_a_plus_in_it_and_a_key_when_it_does_not() {
+        let chord: Trigger = "Ctrl+Alt+Space".parse().expect("the old default");
+        assert_eq!(chord, Trigger::Chord(Chord::ctrl_alt_space()));
+        assert_eq!(chord.to_string(), "Ctrl+Alt+Space");
+        assert!(!chord.is_lone_key());
+        assert_eq!(chord.main_key(), Some(MainKey::Space));
+        assert!(chord.has_modifier());
+
+        // A bare key is still readable, because the application is what refuses it and it
+        // needs a parsed trigger to refuse.
+        let bare: Trigger = "F9".parse().expect("a bare function key parses");
+        assert!(!bare.has_modifier());
+        assert_eq!(bare.main_key(), Some(MainKey::Function(9)));
+
+        // A family with no side is neither shape, and says so rather than being guessed at.
+        assert_eq!(
+            "Ctrl".parse::<Trigger>(),
+            Err(ChordParseError::UnknownKey("Ctrl".to_owned()))
+        );
+        assert_eq!("".parse::<Trigger>(), Err(ChordParseError::Empty));
     }
 }

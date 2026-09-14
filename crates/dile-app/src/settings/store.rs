@@ -44,7 +44,7 @@ use super::Settings;
 pub struct Change {
     /// The settings as they now are, already validated.
     pub settings: Settings,
-    /// The chord, the mode or the second key moved: the listener is re-installed.
+    /// The trigger or the mode moved: the listener is re-installed.
     pub hotkey: bool,
     /// The device, the cap or the pre-roll moved: the microphone is re-opened.
     pub capture: bool,
@@ -294,7 +294,7 @@ mod tests {
         let base = Settings::default();
 
         let mut hotkey = base.clone();
-        hotkey.hotkey.second_key = true;
+        hotkey.hotkey.trigger = "Ctrl+Alt+Space".to_owned();
         assert!(Change::between(&base, &hotkey).hotkey);
 
         let mut capture = base.clone();

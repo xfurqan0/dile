@@ -129,18 +129,23 @@ fn main() {
             }
             let settings = store.get();
 
-            // One language decision for the whole process, and one chord for every tooltip.
-            // Both are replaceable, because both are settings: the tray menu, the dialogs and
-            // the settings window all read the same catalogue, so they cannot end up in two
-            // different languages the way nazar-tray's did between its WP4 and WP5.
+            // One language decision for the whole process, and one trigger for every
+            // tooltip. Both are replaceable, because both are settings: the tray menu, the
+            // dialogs and the settings window all read the same catalogue, so they cannot end
+            // up in two different languages the way nazar-tray's did between its WP4 and WP5.
+            //
+            // The trigger is held as the settings spell it — `RightCtrl` — rather than as the
+            // words a tooltip shows, because those words are in the language of the moment and
+            // this outlives a language change. `Ui::hotkey` is where the two meet.
             let strings = Arc::new(RwLock::new(Arc::new(Strings::for_setting(
                 settings.ui.language.tag(),
             ))));
-            let hotkey = Arc::new(RwLock::new(settings.hotkey.chord.clone()));
+            let hotkey = Arc::new(RwLock::new(settings.hotkey.trigger.clone()));
 
             {
                 let catalogue = strings.read().expect("a fresh catalogue is uncontended");
-                tray::create(app, catalogue.as_ref(), &settings.hotkey.chord)?;
+                let label = i18n::trigger_label(catalogue.as_ref(), &settings.hotkey.trigger);
+                tray::create(app, catalogue.as_ref(), &label)?;
             }
 
             // One handle on the tray and the panel, shared by every background thread. It
@@ -177,7 +182,7 @@ fn main() {
             // application is closing, and to the settings window's engine group.
             app.manage(engine.clone());
 
-            // The four changes nobody else owns: the language, the chord the tooltip names,
+            // The four changes nobody else owns: the language, the trigger the tooltip names,
             // the autostart switch and the tier. The session owns the hook and the
             // microphone, and the engine supervisor reads the strictness and the dictionary
             // where it uses them.
@@ -191,8 +196,8 @@ fn main() {
                 }
                 if change.hotkey {
                     match tooltip_hotkey.write() {
-                        Ok(mut label) => label.clone_from(&change.settings.hotkey.chord),
-                        Err(_) => log::warn!("the tooltip still names the previous chord"),
+                        Ok(mut trigger) => trigger.clone_from(&change.settings.hotkey.trigger),
+                        Err(_) => log::warn!("the tooltip still names the previous trigger"),
                     }
                     listening_ui.rest();
                 }

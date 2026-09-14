@@ -87,6 +87,42 @@ pub fn interpolate(template: &str, params: &[(&str, &str)]) -> String {
     out
 }
 
+/// The prefix of the eight keys that name a physical modifier key.
+///
+/// The second half is the trigger's own spelling — `hotkey.key.RightCtrl` — so the catalogue
+/// and `dile_hotkey::ModifierOnly`'s `Display` cannot drift apart without the fallback below
+/// showing it.
+const KEY_PREFIX: &str = "hotkey.key.";
+
+/// The trigger as a person reads it, in the language the interface is in.
+///
+/// A chord comes back exactly as it is written: `Ctrl+Alt+Space` is already the notation every
+/// application on the machine uses, and translating `Ctrl` would make a settings file and a
+/// tooltip disagree about the same key. A **lone modifier** does not have that luxury —
+/// `RightCtrl` is a spelling for a settings file, not a phrase — so it is looked up as
+/// `hotkey.key.<spelling>` and comes back as "Right Ctrl" or "Sağ Ctrl".
+///
+/// A string that is not a trigger at all is returned unchanged, and so is one whose key is
+/// missing from the catalogue. Both are the same decision as [`Strings::template`]'s: a label
+/// that shows something wrong is better than a tooltip with a hole in it.
+#[must_use]
+pub fn trigger_label(strings: &Strings, trigger: &str) -> String {
+    let Ok(parsed) = trigger.parse::<dile_hotkey::Trigger>() else {
+        return trigger.to_owned();
+    };
+    let written = parsed.to_string();
+    if parsed.is_lone_key() {
+        let key = format!("{KEY_PREFIX}{written}");
+        let text = strings.text(&key);
+        // `text` answers with the key itself when nobody wrote the string, which would put
+        // `hotkey.key.RightCtrl` in a tooltip.
+        if text != key {
+            return text;
+        }
+    }
+    written
+}
+
 /// The strings of one language, with English behind them.
 #[derive(Debug)]
 pub struct Strings {
@@ -179,7 +215,8 @@ impl Strings {
 
 #[cfg(test)]
 mod tests {
-    use super::{Strings, interpolate, primary_subtag};
+    use super::{Strings, interpolate, primary_subtag, trigger_label};
+    use std::collections::BTreeMap;
 
     #[test]
     fn a_tag_narrows_to_its_language_and_an_unknown_one_falls_back_to_english() {
@@ -245,5 +282,43 @@ mod tests {
             english.format("tray.tooltip.idle", &[("hotkey", "Ctrl+Alt+Space")]),
             "Dile — hold Ctrl+Alt+Space to dictate"
         );
+    }
+
+    #[test]
+    fn a_lone_modifier_is_named_in_words_and_a_chord_is_passed_through() {
+        let english = Strings::for_locale("en");
+        let turkish = Strings::for_locale("tr");
+
+        // The shipped trigger, in both languages.
+        assert_eq!(trigger_label(&english, "RightCtrl"), "Right Ctrl");
+        assert_eq!(trigger_label(&turkish, "RightCtrl"), "Sağ Ctrl");
+        assert_eq!(trigger_label(&english, "LeftMeta"), "Left Win");
+
+        // A spelling a person typed into the file by hand still resolves, because the label
+        // is taken from the parsed trigger rather than from the string.
+        assert_eq!(trigger_label(&english, "right-ctrl"), "Right Ctrl");
+
+        // A chord is notation, not prose: it is the same in every language.
+        assert_eq!(trigger_label(&english, "Ctrl+Alt+Space"), "Ctrl+Alt+Space");
+        assert_eq!(trigger_label(&turkish, "Ctrl+Alt+Space"), "Ctrl+Alt+Space");
+        assert_eq!(
+            trigger_label(&english, " alt + ctrl + space "),
+            "Ctrl+Alt+Space",
+            "a chord is written back in one order, whatever order it was typed in"
+        );
+
+        // A string that is not a trigger at all is handed back as it came.
+        assert_eq!(trigger_label(&english, "Ctrl"), "Ctrl");
+        assert_eq!(trigger_label(&english, ""), "");
+
+        // And a catalogue with nothing in it — which is what a damaged locale file becomes —
+        // falls back to the trigger's own spelling rather than to the key it looked up.
+        let nothing = Strings {
+            locale: "en".to_owned(),
+            messages: BTreeMap::new(),
+            fallback: BTreeMap::new(),
+        };
+        assert_eq!(trigger_label(&nothing, "RightCtrl"), "RightCtrl");
+        assert_eq!(trigger_label(&nothing, "Ctrl+Alt+Space"), "Ctrl+Alt+Space");
     }
 }

@@ -267,7 +267,10 @@ impl Panel {
             EVENT_PANEL,
             PanelPayload {
                 mode: "idle",
-                hotkey: self.store.get().hotkey.chord,
+                hotkey: crate::i18n::trigger_label(
+                    &self.ui.strings(),
+                    &self.store.get().hotkey.trigger,
+                ),
             },
         );
     }
@@ -543,7 +546,7 @@ impl Panel {
         let settings = self.store.get();
         let held = self.held.lock().ok();
         Context {
-            hotkey: settings.hotkey.chord.clone(),
+            hotkey: crate::i18n::trigger_label(&self.ui.strings(), &settings.hotkey.trigger),
             auto_transfer: settings.cleanup.auto_transfer
                 && !held.as_ref().is_some_and(|held| held.preview),
             auto_transfer_ms: settings.cleanup.auto_transfer_ms,

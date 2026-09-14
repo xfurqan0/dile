@@ -69,10 +69,29 @@ function applyStrings() {
   $("#dictionary-add").textContent = t("settings.dictionary.add");
 }
 
-function drawChord() {
-  const keys = $("#chord-keys");
+/**
+ * The trigger, which is one setting of two shapes: a chord written with `+`, or one modifier
+ * key on its own.
+ *
+ * A chord is one cap per part, as it has always been. A lone key is a single cap named out of
+ * the catalogue the tray reads too, so `RightCtrl` shows as "Right Ctrl" rather than as the
+ * spelling the file stores. A key the catalogue has no name for falls back to that spelling:
+ * `t` hands a missing key back unchanged, which is a key id in front of somebody otherwise.
+ */
+function drawTrigger() {
+  const trigger = settings.hotkey.trigger;
+  let parts;
+  if (trigger.includes("+")) {
+    parts = trigger.split("+");
+  } else {
+    const key = "hotkey.key." + trigger;
+    const named = t(key);
+    parts = [named && named !== key ? named : trigger];
+  }
+
+  const keys = $("#trigger-keys");
   keys.textContent = "";
-  for (const part of settings.hotkey.chord.split("+")) {
+  for (const part of parts) {
     const cap = document.createElement("span");
     cap.className = "kbd";
     cap.textContent = part;
@@ -181,9 +200,8 @@ function drawDictionary() {
 }
 
 function draw() {
-  drawChord();
+  drawTrigger();
   drawSegmented("mode", settings.hotkey.mode);
-  drawSwitch("second-key", settings.hotkey.second_key);
   drawCap();
   drawDevices();
   drawSegmented("strictness", settings.cleanup.strictness);
@@ -322,7 +340,7 @@ function wire() {
     item.addEventListener("click", () => showSection(item.dataset.section));
   }
 
-  $("#chord-change").addEventListener("click", changeChord);
+  $("#trigger-change").addEventListener("click", changeTrigger);
 
   for (const button of $$in($("#mode"), "button")) {
     button.addEventListener("click", () => {
@@ -331,12 +349,6 @@ function wire() {
       schedule();
     });
   }
-
-  $("#second-key").addEventListener("click", () => {
-    settings.hotkey.second_key = !settings.hotkey.second_key;
-    drawSwitch("second-key", settings.hotkey.second_key);
-    schedule();
-  });
 
   $("#cap").addEventListener("input", () => {
     settings.capture.cap_secs = Number($("#cap").value);
@@ -460,14 +472,14 @@ function wire() {
   });
 }
 
-async function changeChord() {
-  const button = $("#chord-change");
+async function changeTrigger() {
+  const button = $("#trigger-change");
   const label = button.textContent;
   button.textContent = t("settings.hotkey.listening");
   button.disabled = true;
   try {
-    settings.hotkey.chord = await invoke("capture_hotkey");
-    drawChord();
+    settings.hotkey.trigger = await invoke("capture_hotkey");
+    drawTrigger();
     await save();
   } catch (error) {
     console.error(error);
