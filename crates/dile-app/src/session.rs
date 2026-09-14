@@ -54,7 +54,11 @@ use std::time::{Duration, Instant};
 use dile_capture::{Capture, LevelReceiver, Recording};
 use dile_hotkey::{Action, HotkeyListener};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+// `Manager` is only what `AppHandle::path` needs, and that call lives in
+// `save_last_recording`, which is a debug build's alone.
+#[cfg(debug_assertions)]
+use tauri::Manager;
 
 use crate::engine::EngineClient;
 use crate::panel::Panel;

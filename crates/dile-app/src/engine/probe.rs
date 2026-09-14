@@ -60,6 +60,10 @@ pub enum ProbeError {
     NoGpuSupport,
     /// `DILE_FORCE_PROBE_FAIL` was set. Debug builds only, and only so that the fallback
     /// path can be exercised on a machine whose GPU works.
+    ///
+    /// The variant is compiled out of a release build with the one place that constructs it
+    /// (`engine::mod`), so a shipped binary carries no way to fail a probe on purpose.
+    #[cfg(debug_assertions)]
     #[error("the probe was forced to fail by DILE_FORCE_PROBE_FAIL")]
     Forced,
     /// The device answered, and what it wrote was not the sentence.
