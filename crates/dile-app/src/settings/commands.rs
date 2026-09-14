@@ -274,6 +274,12 @@ pub fn open_models_dir(app: AppHandle) -> Result<(), CommandError> {
     // application owns is a smaller surface than a permission a webview could point
     // anywhere. `explorer` answers with a non-zero exit code even when it worked, so the
     // status is deliberately not read.
+    //
+    // No `CREATE_NO_WINDOW` here, and the reason is the PE header rather than an oversight:
+    // `explorer.exe` is a GUI-subsystem binary, so Windows gives it no console to show. The
+    // flag is on the one child that *is* a console program — `dile-engine-host`, in
+    // `dile_client::host` — because that one is what put a black rectangle behind the
+    // application.
     #[cfg(target_os = "windows")]
     std::process::Command::new("explorer")
         .arg(&directory)

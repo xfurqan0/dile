@@ -384,9 +384,13 @@ mod tests {
         let _ = stub.kill();
         let _ = stub.wait();
         if let Some(owner) = owner {
-            // By pid, and only by pid.
+            use std::os::windows::process::CommandExt;
+            // By pid, and only by pid. `CREATE_NO_WINDOW` because `taskkill` is a console
+            // program, and a console flashing up here would take the foreground away in the
+            // middle of a test whose whole subject is which window has the focus.
             let _ = std::process::Command::new("taskkill")
                 .args(["/PID", &owner.to_string(), "/T", "/F"])
+                .creation_flags(0x0800_0000)
                 .output();
         }
 

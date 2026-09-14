@@ -55,6 +55,35 @@ pub fn transcribe_timeout(samples: usize) -> Duration {
     Duration::from_secs(30) + Duration::from_secs_f64(seconds * 2.0)
 }
 
+/// `CREATE_NO_WINDOW`, from the Windows process-creation flags.
+///
+/// Written out rather than imported: this crate depends on no Windows crate, and one
+/// documented constant is a smaller thing to carry than a dependency for one number.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Start the engine process without a console window on the screen.
+///
+/// **`dile-engine-host` is a console binary and stays one.** It is the program a developer
+/// runs by hand to watch a model load fail, and `docs/BUILDING.md` tells them to. But
+/// `dile-app` is a GUI binary — `windows_subsystem = "windows"` — and Windows gives a
+/// console child spawned by a windowless parent a console of its own, which is the black
+/// rectangle that sat behind Dile for the whole of the 0.1.0 hand test. `CREATE_NO_WINDOW`
+/// says "no console for this child" without changing the subsystem of the binary, so running
+/// it from a terminal still behaves exactly as before.
+///
+/// It costs nothing here because all three of the child's streams are pipes: the wire is
+/// stdout, the log is stderr, and neither has ever wanted a screen to write on.
+#[cfg(windows)]
+fn without_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Nothing to do: only Windows attaches a console to a child process.
+#[cfg(not(windows))]
+fn without_console_window(_command: &mut Command) {}
+
 /// Anything that can go wrong talking to the engine process.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -118,11 +147,13 @@ impl HostProcess {
     /// [`HostError::Spawn`] when the operating system refused to start it.
     pub fn spawn(on_exit: impl FnOnce() + Send + 'static) -> Result<Self, HostError> {
         let binary = locate().ok_or(HostError::NotFound)?;
-        let mut child = Command::new(&binary)
+        let mut command = Command::new(&binary);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        without_console_window(&mut command);
+        let mut child = command.spawn()?;
 
         let pid = child.id();
         let stdin = child.stdin.take();
