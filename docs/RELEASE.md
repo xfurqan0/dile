@@ -197,7 +197,9 @@ git log --all --format=%B | Select-String -Pattern "generated with|co-authored-b
 git grep -niE "generated with|co-authored-by" -- . ':!Cargo.lock'
 
 # No personal data, no absolute paths, no leftover secrets.
-git grep -niE "yldz|@gmail|C:\\\\Users|/Users/|/home/" -- . ':!Cargo.lock'
+# Single-quoted: PowerShell leaves the pattern alone, so `\\` reaches git grep as the one
+# escaped backslash an ERE needs. Double quotes here would send `\\\\` and match nothing.
+git grep -niE 'yldz|@gmail|C:\\Users|/Users/|/home/' -- . ':!Cargo.lock'
 git grep -nE "(sk-ant-|ghp_|xox[abprs]-|AIza)" -- . ':!Cargo.lock'
 
 # The gates that answer these questions properly, on their own.
@@ -206,9 +208,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci-local.ps1
 
 All of it must come back empty or green. The only expected hits are the maintainer's own name
 in `LICENSE`, `tauri.conf.json` and the winget manifests, and the placeholder paths in
-`scripts\check-binary-paths.ps1`, `scripts\build-installer.ps1`, the two workflows and the
-prose describing them. Read those: `C:\Users\<account>` and `C:\Users\runneradmin` are the
-shapes being looked for, and neither names anybody.
+`scripts\check-binary-paths.ps1`, `scripts\build-installer.ps1`, `crates\dile-app\src\paste.rs`
+and the prose describing them — this page, `CHANGELOG.md` and `docs/PROJECT.md`. The two
+workflows carry none of these: the runner's home directory is a string the scripts look for,
+not a path written down in a job. Read the hits: `C:\Users\<account>` and
+`C:\Users\runneradmin` are the shapes being looked for, and neither names anybody.
 
 **And inside the binaries, which none of the greps above can see.** Panic locations and
 `GGML_ASSERT` compile their source path in as a string literal, so `strip = true` does not

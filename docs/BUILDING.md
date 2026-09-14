@@ -89,11 +89,12 @@ suite can run. This is how they get checked.
 cargo tauri dev
 ```
 
-Hold **`Ctrl+Alt+Space`**, say a sentence that begins with a hard consonant, let go. The
-console prints the session:
+Hold the **right Ctrl** — the default trigger, and a chord such as `Ctrl+Alt+Space` can be set
+in its place — say a sentence that begins with a hard consonant, let go. The console prints
+the session:
 
 ```text
-[INFO  dile_app::session] hotkey hook installed: Hold mode, second key false
+[INFO  dile_app::session] hotkey hook installed: RightCtrl in Hold mode
 [INFO  dile_capture] input device "Mikrofon (PRO X)": 48000 Hz, 1 channel(s), f32
 [INFO  dile_app::session] recording: 2.31 s, 36960 samples, speech 1340 ms from 0.62 s to 1.96 s
 [INFO  dile_app::session] debug build: wrote %LOCALAPPDATA%\io.github.xfurqan0.dile\last.wav (2.31 s, speech true)
@@ -103,12 +104,12 @@ What to look at, in order:
 
 | Check | What proves it |
 |---|---|
-| The chord never reaches the window | The editor behind the app gains no space. This is why the hook blocks. |
+| The trigger is not taken from the machine | With the default lone modifier there is nothing to swallow: `Right Ctrl` + `C` still copies in the editor behind the app, and the hold itself leaves nothing in it. Set a chord instead and the opposite is the check — the editor gains no space, because the hook blocks that one. |
 | No clipped first syllable | Play `last.wav`. The recording opens with half a second of the room, then the word — the pre-roll ring. |
 | The tray follows the session | The accent bar goes red while the key is down and amber for the blink before the buffer is handed on; the tooltip says the same. |
 | Silence is not dictated | Hold the key and say nothing: the log says *nothing heard*, no WAV is written, and the tray says so until the next press. |
 | A tap does nothing | Press and release under 250 ms: the log shows the tap, and nothing is recorded. |
-| The cap stops cleanly | Lower `cap_secs` in `crates/dile-app/src/config.rs`, hold past it, and the release still returns the capped buffer with `the recording cap stopped this one` in the log. |
+| The cap stops cleanly | Lower the recording cap in the settings window (or `capture.cap_secs` in `settings.json`), hold past it, and the release still returns the capped buffer with `the recording cap stopped this one` in the log. |
 
 `last.wav` is **debug builds only** and is overwritten every time. A release build does not
 contain the code that writes it.
@@ -116,14 +117,17 @@ contain the code that writes it.
 The two crates can also be exercised on their own, without the application:
 
 ```powershell
-cargo run -p dile-hotkey --example hotkey_probe -- --seconds 30 --second-key
+cargo run -p dile-hotkey --example hotkey_probe -- --seconds 30 --trigger RightCtrl
+cargo run -p dile-hotkey --example hotkey_probe -- --seconds 30 --trigger Ctrl+Alt+Space
 cargo run -p dile-capture --example record -- 5 2
 ```
 
 The probe prints every decision with the **keyboard layout of the focused window** next to it,
 which is how `docs/PROJECT.md` §3's "re-verified against IME in WP2" is actually answered:
-switch to the Turkish layout and watch `layout=041F` appear on the line. It also blocks the
-chord while it runs, and never the second key — `Ctrl+C` keeps working. The capture example
+switch to the Turkish layout and watch `layout=041F` appear on the line. `--trigger` takes
+either shape and defaults to `RightCtrl`; a chord trigger is blocked while the probe runs,
+which is the behaviour being checked, and a lone-modifier one never is, so `Ctrl+C` keeps
+working throughout. The capture example
 records five seconds with a two-second cap, so the cap fires on purpose, draws the level bar
 at 20 Hz and writes `out.wav` next to you.
 
@@ -137,7 +141,7 @@ below is one `cargo tauri dev` and a Notepad.
 cargo tauri dev
 ```
 
-**The loop.** Put the caret in a text field — Notepad will do — hold **`Ctrl+Alt+Space`**, say
+**The loop.** Put the caret in a text field — Notepad will do — hold the **right Ctrl**, say
 a sentence, let go. The card appears at the top of the screen with the microphone level moving
 in it, then says what it is doing while the engine works, then shows the cleaned text with a
 thin green line running out underneath. Do nothing and the sentence is in the field 2.5 s

@@ -4,13 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Nothing has been released. The work packages that get to a first release are in
-`docs/PROJECT.md` §6.
+0.1.0 is the first release. The work packages that got it there are in `docs/PROJECT.md` §6.
 
-## [Unreleased]
+## [0.1.0] — 2026-09-15
 
 ### Added
 
+- **The trigger is the right Ctrl, held on its own.** There is one trigger and it takes two
+  shapes: a modifier key held alone, or a chord such as `Ctrl+Alt+Space` — which is now what
+  you change the trigger to rather than what you start with. A lone modifier is never
+  swallowed, so `Right Ctrl` + `C` still copies and anything else pressed during the hold
+  withdraws the recording; a chord is swallowed exactly as before, because a `Ctrl+Alt+Space`
+  that reached the focused window would put a space in the editor being dictated into. The
+  hand test of the installer is what decided it: a hand can rest on a lone modifier for a
+  whole sentence, and a three-key chord tires it inside a minute.
+  - **`hotkey.trigger` replaces `hotkey.chord` and `hotkey.second_key`** in `settings.json`,
+    and holds either shape as a string. A file written by a pre-release build is migrated
+    where it is read — `second_key: true` means the right Ctrl already *was* that person's
+    trigger, so it becomes `RightCtrl`, and otherwise the chord carries over — and the old
+    keys are gone after the first save. Nobody has a released file yet, which is why this is
+    a note rather than a migration.
 - **WP7 — there is something to install.** An NSIS installer that puts Dile in
   `%LOCALAPPDATA%\Dile` per user with no administrator rights, a winget package, a release
   workflow that builds it on a GitHub runner from a tag, and a command line.

@@ -14,11 +14,6 @@ Windows 10 1809 or newer. Installs per user, no administrator rights. The winget
 reviewed a day or two after each release, so until it resolves the installer is on the
 [Releases](https://github.com/xfurqan0/dile/releases) page.
 
-> **Status: 0.1.0 is not released yet.** It is written, packaged and checked, and the tag that
-> publishes it is the maintainer's to push — until then neither the command above nor the
-> Releases page has anything for you, and *Building* at the bottom is the way in.
-> `docs/RELEASE.md` step 1 is where this paragraph comes out.
-
 <!-- A GIF of one dictation — hold, speak, the card, the paste — goes here. It needs a screen
      recording, which is a thing a person makes rather than a thing a build produces;
      docs/RELEASE.md step 10 keeps it on the list. Until then the loop is described in words
@@ -50,12 +45,13 @@ English works too. Turkish just comes first.
 
 ## The loop
 
-Put the caret wherever you are typing. Hold **`Ctrl+Alt+Space`**, say a sentence, let go.
+Put the caret wherever you are typing. Hold the **right Ctrl**, say a sentence, let go.
 
 1. **Recording.** A card appears at the top of the monitor the focused window is on, with a
    level meter that moves with your microphone and the elapsed time against the 60 s cap. The
-   chord is swallowed, so no space reaches the editor behind it. Esc throws the recording
-   away.
+   key itself is never swallowed — `Right Ctrl` + `C` still copies — and pressing anything
+   else while you hold it withdraws the recording. A chord, if you set one instead, *is*
+   swallowed, so no space reaches the editor behind it. Esc throws the recording away.
 2. **Working.** An honest line — the model, the tier, how much audio — rather than a blank
    spinner.
 3. **Ready.** The cleaned text, with a thin countdown line under it. Do nothing and it is in
@@ -118,10 +114,13 @@ transcription time alone.
 
 From the tray menu, and **everything applies while Dile is running** — no restart, ever.
 
-- **Hotkey.** The chord, hold or toggle, and an optional second key. Press Change and it
-  listens for ten seconds and takes what you press. `Ctrl+Space` is refused with the reason
-  (an IME swallows it before any hook sees it), and so is a chord with no modifier — a bare key
-  as a global hotkey takes that key away from the whole machine.
+- **Hotkey.** The trigger, and hold or toggle. The trigger is one key held on its own — the
+  right Ctrl by default — or a chord such as `Ctrl+Alt+Space`; press Change and it listens for
+  ten seconds and takes whichever of the two you press. A lone key is hold-to-talk in either
+  mode, because a recording latched to a key your hand rests on has no way out of it.
+  `Ctrl+Space` is refused with the reason (an IME swallows it before any hook sees it), and so
+  is a chord with no modifier — a bare key as a global hotkey takes that key away from the
+  whole machine.
 - **Recording.** Microphone, the cap in seconds, and how much audio from before the key went
   down is kept so the first syllable is never clipped.
 - **Cleanup and transfer.** Strictness, auto-transfer on or off, and how long the countdown
