@@ -10,6 +10,25 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **A three-second dictation no longer pays for thirty seconds.** Whisper's encoder is fixed
+  at a thirty-second window and pads anything shorter to fill it, so every take — two
+  seconds or twenty — cost the same, and that one encoder pass was 80–93 % of the wall
+  clock. Dile now shortens the window to the length of the recording. On the Vulkan tier a
+  **three-second clip goes from 3.9 s to 1.3 s** and a ten-second one from 3.8 s to 1.5 s,
+  with the same transcript; a thirty-second take is unchanged, because at thirty seconds
+  there is nothing to trim.
+  - The width is a function of the audio, never a fixed number: too narrow a window puts the
+    decoder into a repetition loop that costs far more than the encoder saved, so the rule
+    scales with the recording and stops at a measured floor.
+  - `dile transcribe --json` now reports `audio_ctx`, the window the run actually used.
+    `DILE_AUDIO_CTX=0` restores the full thirty-second window on any build, if a machine
+    ever needs it back.
+  - The speech runtime (`transcribe.cpp`) is now **carried as a fork in this repository**,
+    at `vendor/transcribe-cpp/`, because the parameter this needs is not on its public
+    surface and upstream declined to add it. It is upstream 0.2.3 plus one field; the
+    provenance, the diff and the re-vendoring procedure are in
+    `vendor/transcribe-cpp/VENDOR.md`.
+
 - **Linux gets the GPU tier, probed, like Windows.** The packages carry an engine host built
   with `gpu-vulkan`, and the first start transcribes the committed two-second Turkish clip on
   the GPU before trusting it — the same arrangement Windows has had since 0.1.0. Until now a

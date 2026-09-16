@@ -10,6 +10,9 @@ members = [
     "crates/dile-capture",
     "crates/dile-app",
 ]
+# `vendor/` is a fork we carry, not a member: it is edition 2021, it has its own
+# workspace, and it must not inherit this one's lints, profile or resolver.
+exclude = ["vendor"]
 resolver = "3"
 
 [workspace.package]
@@ -40,3 +43,24 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# transcribe.cpp, forked in-tree for one field.
+#
+# Whisper pads every request to thirty seconds and runs the encoder over all
+# 1500 positions, so a three-second dictation pays a thirty-second encoder pass
+# — 80-93% of the wall clock on this workload (`docs/PROJECT.md` §3, WP8). The
+# parameter that shortens that window (`audio_ctx`, whisper.cpp's `-ac`) exists
+# in the C++ but is not on `transcribe-cpp`'s public surface, and upstream
+# declined to add it (handy-computer/transcribe.cpp#149: "I generally don't
+# like adding ENV flags as they feel like a hack… I am okay with some latency
+# penalty at the cost of correctness").
+#
+# So the field is ours to carry. `vendor/transcribe-cpp/` is upstream 0.2.3
+# verbatim plus that one field, threaded from the C struct to the Rust
+# wrapper; `vendor/transcribe-cpp/VENDOR.md` is the provenance and the exact
+# diff. A path patch rather than a git one because it has to build on a CI
+# runner with no network and no fork to fetch from, on both Windows and Linux,
+# from a single `git clone`.
+[patch.crates-io]
+transcribe-cpp = { path = "vendor/transcribe-cpp/bindings/rust/transcribe-cpp" }
+transcribe-cpp-sys = { path = "vendor/transcribe-cpp" }

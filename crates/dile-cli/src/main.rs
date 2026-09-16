@@ -70,7 +70,7 @@ ARGUMENTS
 
 OPTIONS
     --json       Print one JSON object instead of the text: raw, cleaned,
-                 segments, took_ms, device, model.
+                 segments, took_ms, device, audio_ctx, model.
     --yes        Agree to download the model this machine's tier needs, if it is
                  not on disk yet. Without it, the question is printed and
                  nothing is fetched.
@@ -263,6 +263,7 @@ fn run(arguments: &[String]) -> Result<(), Failure> {
             "segments": response.segments,
             "took_ms": response.took_ms,
             "device": response.device,
+            "audio_ctx": response.audio_ctx,
             "model": spec.file,
         });
         let text = serde_json::to_string_pretty(&document)

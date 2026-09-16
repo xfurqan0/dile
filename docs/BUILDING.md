@@ -21,6 +21,14 @@ rustup toolchain install stable
 cargo install tauri-cli --locked
 ```
 
+**The speech runtime is built from a copy in this repository, not from crates.io.**
+`vendor/transcribe-cpp/` is `transcribe.cpp` 0.2.3 plus one field this product needs and
+upstream declined to add, and the workspace's `[patch.crates-io]` points both
+`transcribe-cpp` and `transcribe-cpp-sys` at it. Nothing about the build changes — the same
+CMake compiles the same C++ and it takes the same three to four minutes — but a clone is now
+the only thing a build needs, and `vendor/transcribe-cpp/VENDOR.md` is where the provenance,
+the diff and the procedure for taking a newer upstream live.
+
 A **CPU build needs only CMake and MSVC**, and that is the default cargo feature set, so
 nobody has to install a graphics SDK to work on Dile. It is a *build* default and not the
 product's runtime tier: `docs/PROJECT.md` §3 makes Vulkan the default tier behind a first-run
@@ -494,6 +502,22 @@ the one process on the machine that cannot synthesise it.
 second copy. The tier decision lives in `%APPDATA%\io.github.xfurqan0.dile\engine.json`;
 delete it to make the next start probe again.
 
+**One switch is not in that table and not debug-only.** `DILE_AUDIO_CTX` is read by
+`dile-engine` in **release builds too**, on purpose:
+
+| Value | What the engine does |
+|---|---|
+| unset | the policy: the encoder window is scaled to the length of the recording |
+| `0` | the full thirty-second window — exactly the behaviour of every build before this one |
+| `1`…`1500` | that window, in encoder positions, whatever the policy would have said |
+
+It is compiled in because it is the one-variable way out of a regression on a machine nobody
+here has: the window is the single setting that can make a run both faster and *wrong*, so
+there has to be an answer that does not need a new binary. Values below the policy's floor
+are accepted here and nowhere else, because reproducing the broken band is what the table in
+"Where the time goes" was measured with. The value a run actually used comes back on the
+wire and is printed by `dile transcribe --json`.
+
 ## Regenerating the probe clip
 
 `crates/dile-app/assets/probe.wav` is the two seconds of Turkish the first-run GPU probe
@@ -755,6 +779,12 @@ the tray keeps it in, so these are what a dictation costs and not what a cold st
 | Vulkan, the CPU tier's smaller `turbo-q5_0` | 2.50 s | 2.48 – 2.51 s | correct |
 | **CPU tier — `turbo-q5_0`, 20 threads** | **14.6 s** | 8.4 – 26.0 s | correct |
 
+**Those are full-window figures, and they are no longer what a dictation costs.** Everything
+in this table ran the encoder over a thirty-second window whatever the clip was; the section
+below shortens that window to the recording and takes the same three-second clip to **1.38 s**
+on the tier that ships. The rows stay because they are what decided the tier, and because the
+*ratio* between them is what the shortening does not change.
+
 **The number that decided it is the third column.** The Vulkan tier is four times faster than
 the CPU tier, and it is *steady*: twelve consecutive transcriptions landed inside 20 ms of
 each other, where the CPU tier moved by a factor of three between runs of the same clip on
@@ -790,42 +820,103 @@ once, which is the whole arrangement `docs/PROJECT.md` §3 built for Windows.
 | 13 decode steps | 723 ms | 460 ms |
 | total | 14,567 ms | 3,715 ms |
 
-**The encoder is the whole bill, and the encoder does not know how long the clip is.** Whisper
-pads every short-form request to a 30-second mel window — `transcribe-cpp`'s
+**The encoder is the whole bill, and the encoder does not know how long the clip is.**
+Whisper pads every short-form request to a 30-second mel window — `transcribe.cpp`'s
 `arch/whisper/model.cpp` pads the PCM to `fe_n_samples` (480,000) and produces exactly
-`fe_nb_max_frames` (3,000) mel frames — so a 2 s clip, a 3 s clip and a 10 s clip all run
-1,500 encoder positions and all cost the same:
+`fe_nb_max_frames` (3,000) mel frames — so before this was fixed, a 2 s clip, a 3 s clip and
+a 10 s clip all ran 1,500 encoder positions and all cost the same.
 
-| clip | Vulkan tier | CPU tier |
+**Dile now shortens that window to the recording**, which is whisper's `audio_ctx` (`-ac`).
+`transcribe-cpp` 0.2.3 does not expose it, 0.2.3 is the newest version published, and the
+patch that would add it was proposed upstream and **declined** — so the runtime is carried as
+a fork in this repository (`vendor/transcribe-cpp/`, and `VENDOR.md` beside it). The width is
+chosen by `dile_engine::audio_ctx_for`, a pure function of the sample count:
+
+```
+audio_ctx = clamp(ceil(100 × seconds), 640, 1500)
+```
+
+Measured on the machine at the top of this section, engine host over its own wire with the
+model loaded, three runs per row, the same recordings in both columns:
+
+| take | full window | shortened | window used | |
+|---|---|---|---|---|
+| 2.0 s | 3.03 s | **1.38 s** | 640 | 2.20x |
+| 3.0 s | 3.03 s | **1.38 s** | 640 | 2.19x |
+| 5.0 s | 3.45 s | **1.78 s** | 640 | 1.94x |
+| 10.0 s | 3.02 s | **2.13 s** | 1000 | 1.42x |
+| 20.0 s | 3.46 s | 3.41 s | 1500 | 1.01x |
+| 30.0 s | 3.44 s | 3.42 s | 1500 | 1.01x |
+
+*Vulkan tier, `ggml-large-v3-q5_0`. On the smaller `turbo-q5_0`, the same GPU: 2.86 s → 0.95 s
+at three seconds, 2.87 s → 1.65 s at ten.*
+
+**The CPU fallback tier gets the same shape of win**, which matters because it is the tier a
+machine whose driver fails the probe lives on — `turbo-q5_0`, 20 threads, two runs per row:
+
+| take | full window | shortened | window used | |
+|---|---|---|---|---|
+| 2.0 s | 10.90 s | **4.55 s** | 640 | 2.40x |
+| 3.0 s | 10.91 s | **4.37 s** | 640 | 2.50x |
+| 5.0 s | 11.02 s | **4.85 s** | 640 | 2.27x |
+| 10.0 s | 10.84 s | **6.79 s** | 1000 | 1.60x |
+| 20.0 s | 10.89 s | 10.96 s | 1500 | 0.99x |
+| 30.0 s | 21.91 s | 21.81 s | 1500 | 1.00x |
+
+Two rows there are worth reading twice. **Twenty seconds is 0.99x** — the rule has already
+asked for the full window, and the 1 % is this machine's own drift, not a cost. And **thirty
+seconds is twice the price of twenty on the CPU tier and the same price on Vulkan**: that is
+the decoder, not the encoder. The thirty-second fixture holds fourteen sentences to decode
+where the twenty-second one holds nine, and decode steps are what the CPU is slow at.
+
+**Both of the port's targets are met**, where before only the second was: a three-second
+dictation under a second and a half, a ten-second one under four. A thirty-second take is
+unchanged by construction — at thirty seconds there is no padding to drop, and the rule has
+already given up and asked for the full window.
+
+**The rule is the design, and a fixed number could not have shipped.** Shortening the window
+puts the decoder into a repeat loop, which trips `compression_ratio_thold`, which starts the
+temperature fallback ladder — and the time saved in the encoder comes back multiplied. All of
+these are measured on this machine, on the tier that ships:
+
+| forced window | 3 s clip | 9 s clip, two Turkish sentences |
 |---|---|---|
-| 2.04 s (`probe.wav`) | 3.7 s | 14.3 s |
-| 3.00 s | 3.7 s | 14.6 s |
-| 10.00 s | 3.7 s | 14.5 s |
+| 128 | 22–51 s, the sentence seven times | — |
+| 192 | 40 s, the sentence four times | — |
+| 256 | 0.88 s, correct | — |
+| 512 | 1.13 s, correct | **35.0 s**, and a hallucinated subtitle credit |
+| 603 — 67 positions per second | — | 3.5 s, the second sentence repeated |
+| **640 — the floor** | 1.38 s, correct | **2.2 s, correct** |
+| 1500 — the full window | 3.03 s | 4.4 s |
 
-A dictation has a **floor, not a duration**. Going below it means running the encoder on
-fewer positions, which is whisper's `audio_ctx` — and **`transcribe-cpp` 0.2.3 does not expose
-it.** `WhisperRunOptions` carries the prompt, the temperature and the thresholds and nothing
-about the encoder's context; `SessionOptions` carries threads, the KV type and the *decoder*
-context. 0.2.3 is the newest version published. The encoder graph the runtime builds is
-already capable of it — `build_encoder_graph` takes a prefix view of the positional
-embedding whenever `T_enc` is short of the maximum — so this is a missing knob rather than a
-missing capability.
+Two numbers in that table are the whole policy. **A hundred positions per second** is twice
+what one second of audio occupies, and the doubling is the margin: sixty-seven per second is
+what the first round of research arrived at and it is *inside the broken band* here. **Six
+hundred and forty** is the floor, and it is wider than a short take needs — three seconds is
+correct at 256 — because the failures found were not near the point where the window stops
+holding the audio. Forced to 512, a five-second recording of the same sentence twice came
+back with the sentence **once** on one of the three model-and-device combinations tried and
+correct on the other two. A dropped sentence that shows up on one backend only is exactly the
+bug that cannot be reproduced from a report, so the floor sits at the narrowest width that was
+clean everywhere.
 
-**It is also not simply waiting upstream.** The knob was proposed to the runtime
-(handy-computer/transcribe.cpp#149) and **declined**: the maintainer's position is that an
-environment flag is a hack and that some latency is worth paying for correctness. So the
-route to it is a vendored patch and a fork to maintain, which is a decision about what this
-product is willing to carry rather than a patch to write — and it is the single largest
-speed-up available on either tier, which is why it is written down here rather than left as
-a shrug.
+**What the quality gate says, including the part that is not clean.** Eleven recordings, two
+models, both devices, every run compared against the same recording through the full window:
 
-**And it is not a dial to turn down blindly.** Shortening the window puts the decoder into a
-repeat loop, which trips `compression_ratio_thold`, which starts the temperature fallback
-ladder — and the time saved in the encoder comes back multiplied in the decoder. Measured on
-this machine through the upstream implementation, a 3 s clip is clean at 512 encoder
-positions and *slower* at 256; a 30 s clip at 512 took eight times the default and
-hallucinated. Anything built on this has to carry a rule that scales with the audio, and a
-correctness check beside it.
+* On the **real recording** — the committed Turkish probe clip and the fixtures built from it
+  — the transcript is **byte-identical with the window shortened and not, 6 of 6 clips**, on
+  all three model-and-device combinations, and both configurations are deterministic across
+  separate processes.
+* On a **synthetic** fixture (espeak-ng Turkish, which the model is already guessing at:
+  baseline WER 0.13 – 0.29) the shipped tier differs on 2 of 5 clips, and **both differences
+  are the shortened window being more correct** — it writes *demlenmiş* where the full window
+  writes *memlenmiş*. Mean WER 0.205 → 0.176; on `turbo-q5_0` every row is identical, on both
+  devices.
+* **On the CPU fallback tier: 11 of 11 identical**, real and synthetic alike.
+
+That is a better result than the honest expectation, and it is not a guarantee: the window is
+an input to the encoder, so on audio the model is unsure about it can move a marginal token
+either way. `DILE_AUDIO_CTX=0` puts the full window back on any build, without a new binary.
 
 **A related thread, left deliberately untouched.** `run_options` pins `temperature` at 0 and
 says nothing about `temperature_inc`, so the runtime's own default of 0.2 stands and the

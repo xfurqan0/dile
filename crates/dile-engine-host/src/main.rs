@@ -240,9 +240,10 @@ impl Host {
 
         let took_ms = millis(&started);
         note(&format!(
-            "transcribed {} samples in {took_ms} ms, {} segments",
+            "transcribed {} samples in {took_ms} ms, {} segments, audio_ctx {}",
             samples.len(),
-            transcript.segments.len()
+            transcript.segments.len(),
+            transcript.audio_ctx
         ));
 
         let mut response = Response::ok(id);
@@ -258,6 +259,7 @@ impl Host {
             .collect();
         response.took_ms = Some(took_ms);
         response.device = self.device.clone();
+        response.audio_ctx = Some(transcript.audio_ctx);
         response
     }
 }

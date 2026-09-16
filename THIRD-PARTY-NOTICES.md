@@ -15,8 +15,8 @@ copyleft dependency in an MIT product is a rewrite, not a paperwork problem.
 | Component | Licence | Why it is here |
 |---|---|---|
 | [Tauri](https://github.com/tauri-apps/tauri) 2 and its plugins | Apache-2.0 OR MIT | The application shell: window, tray, IPC, bundler. |
-| [`transcribe-cpp`](https://crates.io/crates/transcribe-cpp) 0.2.3 and `transcribe-cpp-sys` | MIT | The speech-to-text runtime, and the single decision runtime of the M0 protocol. |
-| [`transcribe.cpp`](https://github.com/handy-computer/transcribe.cpp), vendored by `transcribe-cpp-sys`, which vendors [`ggml`](https://github.com/ggml-org/ggml) | MIT | The native inference library and its tensor backend. Built from source at compile time. |
+| [`transcribe-cpp`](https://crates.io/crates/transcribe-cpp) 0.2.3 and `transcribe-cpp-sys`, **forked in-tree** at `vendor/transcribe-cpp/` | MIT | The speech-to-text runtime, and the single decision runtime of the M0 protocol. Carried as a fork for one added field, `audio_ctx`; provenance, the diff and the re-vendoring procedure are in [`vendor/transcribe-cpp/VENDOR.md`](vendor/transcribe-cpp/VENDOR.md). |
+| [`transcribe.cpp`](https://github.com/handy-computer/transcribe.cpp) 0.2.3 (upstream `63a44d9`), vendored by `transcribe-cpp-sys`, which vendors [`ggml`](https://github.com/ggml-org/ggml) | MIT | The native inference library and its tensor backend. Built from source at compile time, from the copy in this repository rather than from the registry. |
 | [`serde`](https://serde.rs) and `serde_json` | Apache-2.0 OR MIT | Reading the locale files and the settings. |
 | [`hound`](https://github.com/ruuda/hound) | Apache-2.0 | WAV reading, in the engine's smoke test only. Not linked into the shipped binary. |
 | [`handy-keys`](https://github.com/handy-computer/handy-keys) | MIT | The global trigger. On Windows a low-level keyboard hook; on Linux its own `evdev` backend, which is why the crate is linked on both. |

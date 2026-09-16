@@ -418,6 +418,15 @@ pub struct Response {
     /// the difference between a 0.03 real-time factor and a 1.0 one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// The encoder window the runtime was asked for, in encoder positions.
+    ///
+    /// 1500 is the full thirty-second window; anything less is the host having shortened it
+    /// to the length of the take. Sent because it is the one setting that can make a run
+    /// both faster and wrong, and a host that shortened the window too far produces a
+    /// plausible wrong transcript rather than an error. `None` is an older host, which
+    /// always ran the full window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_ctx: Option<i32>,
 }
 
 impl Response {
@@ -603,6 +612,31 @@ mod tests {
 
         let hello: Request = serde_json::from_str(r#"{"op":"hello","id":1}"#).expect("parse");
         assert_eq!(hello, Request::Hello { id: 1 });
+    }
+
+    #[test]
+    fn a_host_that_shortened_the_window_says_so_and_an_older_one_is_still_readable() {
+        let mut answer = Response::ok(4);
+        answer.text = Some("merhaba".to_string());
+        answer.audio_ctx = Some(512);
+        let json = serde_json::to_value(&answer).expect("serialize");
+        assert_eq!(json["audio_ctx"], 512);
+        assert_eq!(
+            serde_json::from_value::<Response>(json).expect("deserialize"),
+            answer
+        );
+
+        // The field is why WP7 can ship a newer host against an older client and the other
+        // way round: a response from before the window was a thing parses, and reads as
+        // "not said" rather than as zero, which would mean the full window and be a guess.
+        let older: Response =
+            serde_json::from_str(r#"{"id":4,"ok":true,"text":"merhaba"}"#).expect("parse");
+        assert_eq!(older.audio_ctx, None);
+
+        // And a response that did not transcribe anything does not claim a window.
+        let json =
+            serde_json::to_value(Response::failed(4, "no model is loaded")).expect("serialize");
+        assert!(json.get("audio_ctx").is_none());
     }
 
     #[test]

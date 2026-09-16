@@ -126,6 +126,101 @@ pub fn default_threads() -> u32 {
     threads_for(std::thread::available_parallelism().ok())
 }
 
+/// The encoder positions a full Whisper window has, and the spelling of *do not shorten it*.
+///
+/// Whisper's encoder is fixed at thirty seconds: the frontend pads any shorter buffer to
+/// 480000 samples, the mel to 3000 frames, and the encoder attends over all 1500 positions.
+/// So a three-second dictation pays for twenty-seven seconds of zeros — and on this
+/// workload that one encoder pass is **80–93 % of the wall clock** (measured on an Iris Xe
+/// under Vulkan and on twenty CPU threads; `docs/PROJECT.md` §3, WP8).
+pub const FULL_AUDIO_CTX: i32 = 1500;
+
+/// The shortest encoder window [`audio_ctx_for`] will ever ask for.
+///
+/// A measurement, and a conservative reading of it. The window that holds a short take
+/// comfortably is far narrower than this — a three-second clip decodes correctly at 256 —
+/// but the failures found while measuring were not near the point where the window stops
+/// holding the audio, and they were not small. Forced to 512, a five-second recording of
+/// the same sentence twice came back with the sentence **once** on one of the three model
+/// and device combinations tried, and correct on the other two. A dropped sentence that
+/// only appears on one backend is exactly the bug that cannot be reproduced from a report,
+/// so the floor sits at the narrowest width that was clean everywhere.
+///
+/// Below it the failure is not an error. At 256 a three-second clip is correct; at 192 it
+/// returned the sentence **four times over and took 40 s**, and at 128 seven times over and
+/// 22–50 s. The shortened window puts the decoder into a repetition loop, which trips
+/// `compression_ratio_thold`, which starts the temperature fallback ladder — and everything
+/// the encoder saved comes back multiplied.
+pub const MIN_AUDIO_CTX: i32 = 640;
+
+/// Encoder positions per second of audio the window is scaled by.
+///
+/// Fifty positions is what one second of audio *occupies* (1500 over 30 s), so this is a
+/// **factor of two of headroom** — and the headroom is the entire safety margin, arrived at
+/// by finding where a smaller one breaks. A nine-second recording of two Turkish sentences,
+/// on the shipped tier's model:
+///
+/// | window | result |
+/// |---|---|
+/// | 512 | 35.0 s, ending in a hallucinated subtitle credit |
+/// | 603 — what 67 positions per second asks for | 3.5 s, the second sentence repeated |
+/// | **640** | **2.2 s, correct** |
+/// | 768 | 2.4 s, correct |
+///
+/// Sixty-seven per second is the figure the first round of research arrived at, and it is
+/// **inside the broken band** on this stack. Being generous costs little and the cost is
+/// bounded — past about six seconds the saving was already shrinking, and at twenty seconds
+/// it was 16 % — while being tight costs a 35-second answer that is also wrong.
+const AUDIO_CTX_PER_SECOND: f64 = 100.0;
+
+/// How wide an encoder window a buffer of `samples` should be transcribed in.
+///
+/// The whole of the policy as a function of one number, so the decision is testable without
+/// a model, a GPU or a microphone. [`FULL_AUDIO_CTX`] is the answer for anything long enough
+/// that shortening buys nothing — and returning it there is the *load-bearing* half: a fixed
+/// 512 on a 29.5-second take ran **eight times slower than the default and hallucinated**.
+/// A dial that is wrong in that direction is worse than no dial.
+///
+/// | take | window | on the shipped tier, against the full window |
+/// |---|---|---|
+/// | ≤ 6.4 s | 640 — the floor | 3 s: 1.3 s against 3.9 s |
+/// | 10 s | 1000 | 2.3 s against 3.8 s |
+/// | ≥ 15 s | 1500 — the full window, i.e. unchanged | — |
+#[must_use]
+pub fn audio_ctx_for(samples: usize) -> i32 {
+    // `f64` and not `f32`: five minutes of audio is 4.8 million samples, past the point where
+    // an `f32` counts them exactly, and this number decides whether speech gets dropped.
+    let seconds = samples as f64 / f64::from(SAMPLE_RATE);
+    let wanted = (seconds * AUDIO_CTX_PER_SECOND).ceil();
+    // Through `f64` first: a take long enough to overflow `i32` positions must land on the
+    // ceiling, not wrap into the broken band.
+    if wanted >= f64::from(FULL_AUDIO_CTX) {
+        return FULL_AUDIO_CTX;
+    }
+    (wanted as i32).clamp(MIN_AUDIO_CTX, FULL_AUDIO_CTX)
+}
+
+/// The window this process was told to use, overriding [`audio_ctx_for`], or `None`.
+///
+/// `DILE_AUDIO_CTX` exists so the measurement table in `docs/BUILDING.md` can be reproduced
+/// and so a machine that regresses has a one-variable way out: `DILE_AUDIO_CTX=0` restores
+/// the full thirty-second window and with it exactly the behaviour of every build before
+/// this one. Values below [`MIN_AUDIO_CTX`] are *allowed* here and nowhere else, because
+/// measuring the broken band is the reason the floor exists.
+fn audio_ctx_override() -> Option<i32> {
+    static OVERRIDE: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        let raw = std::env::var("DILE_AUDIO_CTX").ok()?;
+        let asked: i32 = raw.trim().parse().ok()?;
+        // 0 is the documented spelling of "off", and off is the full window.
+        Some(if asked <= 0 {
+            FULL_AUDIO_CTX
+        } else {
+            asked.min(FULL_AUDIO_CTX)
+        })
+    })
+}
+
 /// Which device the model runs on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Compute {
@@ -228,6 +323,13 @@ pub struct Transcript {
     /// 2026-09-09). Carried through rather than dropped so WP3 can decide whether the field
     /// is worth having.
     pub language: Option<String>,
+    /// The encoder window this transcript was decoded in, in encoder positions.
+    ///
+    /// Reported rather than assumed, and carried all the way out to `dile transcribe
+    /// --json`, because it is the one setting that can make a run both faster and wrong. A
+    /// bug report that says "it hallucinated" is actionable with this number in it and a
+    /// guess without it. [`FULL_AUDIO_CTX`] means the window was not shortened.
+    pub audio_ctx: i32,
 }
 
 /// The backends are registered once per process, whatever loads a model first.
@@ -343,8 +445,12 @@ impl Engine {
         }
 
         let prompt = prompt.filter(|text| !text.trim().is_empty());
-        let result = self.session.run(pcm, &run_options(language, prompt))?;
+        let audio_ctx = audio_ctx_override().unwrap_or_else(|| audio_ctx_for(pcm.len()));
+        let result = self
+            .session
+            .run(pcm, &run_options(language, prompt, audio_ctx))?;
         Ok(Transcript {
+            audio_ctx,
             text: result.text.trim().to_string(),
             segments: result
                 .segments
@@ -365,13 +471,18 @@ impl Engine {
 /// Temperature 0 is the parity baseline of `docs/PROJECT.md` WP1 and beam size is absent
 /// because this runtime has none, which leaves the prompt as the only thing a caller
 /// decides — and the only thing M0 measured a difference from.
-fn run_options(language: &str, prompt: Option<&str>) -> RunOptions {
+fn run_options(language: &str, prompt: Option<&str>, audio_ctx: i32) -> RunOptions {
     RunOptions {
         language: Some(language.to_string()),
         timestamps: TimestampKind::Segment,
         family: Some(RunExtension::Whisper(WhisperRunOptions {
             initial_prompt: prompt.map(str::to_string),
             temperature: Some(0.0),
+            // Always sent, never left to the runtime's default, for the same reason
+            // temperature is: the window is now part of what "the M0 baseline" means, and a
+            // reader should find it named here rather than have to know that the absence of
+            // a field means thirty seconds.
+            audio_ctx: Some(audio_ctx),
             ..Default::default()
         })),
         ..Default::default()
@@ -381,7 +492,8 @@ fn run_options(language: &str, prompt: Option<&str>) -> RunOptions {
 #[cfg(test)]
 mod tests {
     use super::{
-        Compute, Error, MAX_THREADS, SAMPLE_RATE, default_threads, run_options, threads_for,
+        Compute, Error, FULL_AUDIO_CTX, MAX_THREADS, MIN_AUDIO_CTX, SAMPLE_RATE, audio_ctx_for,
+        default_threads, run_options, threads_for,
     };
     use std::num::NonZeroUsize;
     use transcribe_cpp::{RunExtension, TimestampKind};
@@ -453,9 +565,107 @@ mod tests {
         }
     }
 
+    /// Samples for a take of that many seconds, at the one rate this crate takes.
+    fn take(seconds: f32) -> usize {
+        (seconds * SAMPLE_RATE as f32) as usize
+    }
+
+    #[test]
+    fn a_short_take_gets_the_floor_and_not_what_the_arithmetic_says() {
+        // 100 * 3 = 300, and a three-second clip is in fact correct at 256. The floor is
+        // not about whether the window holds the audio: forced to 512 a five-second take
+        // lost a whole sentence on one of three model-and-device combinations and was
+        // correct on the other two, and at 192 a three-second clip returned the sentence
+        // four times over and took 40 s.
+        assert_eq!(audio_ctx_for(take(1.0)), MIN_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(2.0)), MIN_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(3.0)), MIN_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(6.4)), MIN_AUDIO_CTX);
+        // An empty buffer is not a special case worth a branch, but it must not be zero:
+        // zero is the spelling of "full window", and a floor of 512 is the honest answer.
+        assert_eq!(audio_ctx_for(0), MIN_AUDIO_CTX);
+    }
+
+    #[test]
+    fn a_middling_take_scales_with_the_audio() {
+        // Twice what the audio occupies. The measured safe point for a nine-second take
+        // of two sentences was 640 and 603 was already broken, so the rule has to sit well
+        // clear of the arithmetic rather than just above it.
+        assert_eq!(audio_ctx_for(take(9.0)), 900);
+        assert!(
+            audio_ctx_for(take(9.0)) >= 640,
+            "the nine-second safe point is 640"
+        );
+        assert_eq!(audio_ctx_for(take(10.0)), 1000);
+        assert_eq!(audio_ctx_for(take(12.0)), 1200);
+        assert_eq!(audio_ctx_for(take(14.0)), 1400);
+    }
+
+    #[test]
+    fn a_long_take_asks_for_the_whole_window() {
+        // Past fifteen seconds the rule saturates, and saturating at the full window is
+        // the important half: forced to 512 a nine-second take ran 35 s and ended in a
+        // hallucinated subtitle credit. The knob must give up before it does that, and by
+        // then it was buying little anyway — 16 % at twenty seconds.
+        assert_eq!(audio_ctx_for(take(15.0)), FULL_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(20.0)), FULL_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(30.0)), FULL_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(take(120.0)), FULL_AUDIO_CTX);
+        assert_eq!(audio_ctx_for(usize::MAX), FULL_AUDIO_CTX);
+    }
+
+    #[test]
+    fn the_rule_never_leaves_the_measured_band() {
+        // Every length from a tenth of a second to five minutes, because the one failure
+        // mode that matters is silent: a value below the floor does not error, it
+        // hallucinates.
+        for tenths in 0..3000 {
+            let ctx = audio_ctx_for(take(tenths as f32 / 10.0));
+            assert!(
+                (MIN_AUDIO_CTX..=FULL_AUDIO_CTX).contains(&ctx),
+                "{tenths} tenths of a second asked for {ctx}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_is_never_shorter_than_the_audio_in_it() {
+        // 50 encoder positions is one second of audio, and the rule asks for twice that.
+        // The window must hold the take with room to spare, or the engine is asked to drop
+        // speech rather than padding — and the C++ floor that catches that is a backstop,
+        // not the policy.
+        for tenths in 1..300 {
+            let samples = take(tenths as f32 / 10.0);
+            // What the audio occupies, unrounded: 1500 positions spread over 30 seconds.
+            let occupies = samples as f64 / f64::from(SAMPLE_RATE) * 50.0;
+            assert!(
+                f64::from(audio_ctx_for(samples))
+                    >= (occupies * 2.0).min(f64::from(FULL_AUDIO_CTX)),
+                "{samples} samples occupy {occupies:.1} positions and must get twice that"
+            );
+        }
+    }
+
+    #[test]
+    fn the_run_options_carry_the_window_that_was_chosen() {
+        // The decode settings and the window are decided in the same place, because a
+        // reader asking "what did this run actually do" should find one answer.
+        let options = run_options("tr", None, 640);
+        let Some(RunExtension::Whisper(whisper)) = options.family else {
+            panic!("the whisper extension carries the window");
+        };
+        assert_eq!(whisper.audio_ctx, Some(640));
+
+        let full = run_options("tr", None, FULL_AUDIO_CTX);
+        let Some(RunExtension::Whisper(whisper)) = full.family else {
+            panic!("the whisper extension carries the window");
+        };
+        assert_eq!(whisper.audio_ctx, Some(FULL_AUDIO_CTX));
+    }
+
     #[test]
     fn the_decoder_settings_are_the_m0_parity_baseline() {
-        let options = run_options("tr", None);
+        let options = run_options("tr", None, FULL_AUDIO_CTX);
         assert_eq!(options.language.as_deref(), Some("tr"));
         assert_eq!(options.timestamps, TimestampKind::Segment);
 
@@ -470,7 +680,7 @@ mod tests {
 
     #[test]
     fn the_prompt_is_the_one_decoder_knob_a_caller_sets() {
-        let prompted = run_options("tr", Some("cron, SSH, Tauri."));
+        let prompted = run_options("tr", Some("cron, SSH, Tauri."), MIN_AUDIO_CTX);
         let Some(RunExtension::Whisper(whisper)) = prompted.family else {
             panic!("the whisper extension carries the prompt");
         };
