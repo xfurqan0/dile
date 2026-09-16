@@ -1,4 +1,4 @@
-//! The only unsafe code in this application, fenced into one module.
+//! The Windows desktop: the only unsafe code in this application, fenced into one module.
 //!
 //! Everything else in `dile-app` is safe Rust, and the crate says so: `main.rs` carries
 //! `#![deny(unsafe_code)]` rather than `#![forbid]`, and `forbid` was the right word right up
@@ -19,9 +19,13 @@
 //! **Nothing here is about Dile.** The two submodules know about windows, monitors, processes
 //! and the clipboard. What a dictation is, when it pastes and what the panel says about it
 //! belong to `panel.rs` and `paste.rs`.
+//!
+//! [`super::screen`] holds the two types that are not a Windows question — a rectangle and a
+//! display — so that the panel's placement arithmetic stays testable on a platform that has
+//! no `MONITORINFOEXW` to read them out of.
 
 pub mod clipboard;
 pub mod window;
 
 pub use clipboard::{Clipboard, ClipboardError};
-pub use window::{Hwnd, Monitor};
+pub use window::Hwnd;

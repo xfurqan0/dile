@@ -27,6 +27,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::platform::screen::{Monitor, Rect};
 use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
@@ -66,48 +67,6 @@ const FOCUS_POLL: Duration = Duration::from_millis(10);
 /// A window handle, as a number that can cross a thread boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hwnd(isize);
-
-/// A rectangle in physical pixels, as Windows reports one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Rect {
-    /// Left edge.
-    pub left: i32,
-    /// Top edge.
-    pub top: i32,
-    /// Right edge, exclusive.
-    pub right: i32,
-    /// Bottom edge, exclusive.
-    pub bottom: i32,
-}
-
-impl Rect {
-    /// How wide it is.
-    #[must_use]
-    pub const fn width(self) -> i32 {
-        self.right - self.left
-    }
-
-    /// How tall it is.
-    #[must_use]
-    pub const fn height(self) -> i32 {
-        self.bottom - self.top
-    }
-}
-
-/// One display, as the panel needs to know it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Monitor {
-    /// The device name Windows gives it, such as `\\.\DISPLAY1`.
-    ///
-    /// The key the remembered panel position is stored under. It is stable across a session
-    /// and across most reboots, which is the right amount of stability for "where did I drag
-    /// this to on the left-hand screen".
-    pub device: String,
-    /// The whole display, in physical pixels.
-    pub bounds: Rect,
-    /// The part of it not covered by the taskbar, in physical pixels.
-    pub work: Rect,
-}
 
 impl Hwnd {
     /// The window the user is working in, or `None` when nothing has the focus.

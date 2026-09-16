@@ -1,8 +1,8 @@
 //! Where a finished dictation actually goes.
 //!
-//! Four decisions live here and no Win32 call does — every one of those is in
-//! [`crate::win32`], which is why the tables below are ordinary unit tests on a machine with
-//! no clipboard and no focused window:
+//! Four decisions live here and no platform call does — every one of those is in
+//! [`crate::platform`], which is why the tables below are ordinary unit tests on a machine
+//! with no clipboard and no focused window, whichever kind of machine it is:
 //!
 //! 1. **What to call the target.** `Code.exe` is "VS Code" on the panel, because "→ Code.exe"
 //!    tells a person nothing they did not already know and "→ VS Code" tells them where the
@@ -16,8 +16,9 @@
 //!    whatever inherited the focus.
 //! 4. **What to put back.** The user's own clipboard, as text, after the paste has been taken
 //!    — which is possible at all because the offer is a delayed render with a receipt rather
-//!    than a write and a guess. See [`crate::win32::clipboard`] for the mechanism and for
-//!    what a v1 restore does *not* cover.
+//!    than a write and a guess. `src/platform/win32/clipboard.rs` has the mechanism and what
+//!    a v1 restore does *not* cover; on a platform with no clipboard module yet there is
+//!    nothing to restore, because nothing was taken.
 //!
 //! **Copy is not paste.** The panel's copy button writes the clipboard outright and restores
 //! nothing: the user asked for their clipboard to hold this. `docs/PROJECT.md` §3 says so in
@@ -26,7 +27,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::win32::{Clipboard, ClipboardError, Hwnd, window};
+use crate::platform::{Clipboard, ClipboardError, Hwnd, window};
 
 /// How long the transfer waits for the target to actually take the text.
 ///
@@ -170,7 +171,7 @@ impl Paster {
     /// and after it — because "the previous clipboard is restored" is a claim about the
     /// machine rather than about this code, and the only way to check a claim about the
     /// machine is to ask the machine.
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     #[must_use]
     pub fn peek(&self) -> Option<String> {
         self.clipboard.text()
@@ -248,53 +249,59 @@ impl Paster {
 
 #[cfg(test)]
 mod tests {
-    use super::{FRIENDLY_NAMES, Outcome, Paster, SHIFT_PASTE, label_for, stem_of, wants_shift};
-    use std::path::Path;
+    use super::{FRIENDLY_NAMES, SHIFT_PASTE, label_for, stem_of, wants_shift};
+    use std::path::{Path, PathBuf};
+
+    // Only the hand test below needs these, and it only exists where there is a clipboard.
+    #[cfg(windows)]
+    use super::{Outcome, Paster};
+
+    /// A program's path, spelled the way the platform under test spells one.
+    ///
+    /// The fixtures used to be Windows literals, and they were wrong the first time this
+    /// suite ran anywhere else: `Path::file_stem` splits on the separator of the platform it
+    /// was compiled for, so `C:\bin\code.exe` is three components on Windows and one very
+    /// odd file name on Linux — where the stem came back as the whole string and every
+    /// lookup missed. The tables below are about the stem, not about the separator, so the
+    /// fixture is built rather than written down.
+    fn exe(directory: &str, stem: &str) -> PathBuf {
+        let mut path = PathBuf::from(directory);
+        path.push(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+        path
+    }
 
     #[test]
     fn an_executable_becomes_the_name_a_person_would_use() {
+        assert_eq!(label_for(&exe("Programs/Code", "Code")), "VS Code");
         assert_eq!(
-            label_for(Path::new(
-                r"C:\Users\someone\AppData\Local\Programs\Code\Code.exe"
-            )),
-            "VS Code"
-        );
-        assert_eq!(
-            label_for(Path::new(
-                r"C:\Program Files\WindowsApps\WindowsTerminal.exe"
-            )),
+            label_for(&exe("WindowsApps", "WindowsTerminal")),
             "Windows Terminal"
         );
-        assert_eq!(label_for(Path::new(r"C:\Windows\notepad.exe")), "Notepad");
+        assert_eq!(label_for(&exe("Windows", "notepad")), "Notepad");
     }
 
     #[test]
     fn an_application_nobody_named_keeps_its_own_spelling() {
         // Not lower-cased: the map's keys are, so that the lookup is case-insensitive, but a
         // program Dile has never heard of introduces itself the way it spells itself.
-        assert_eq!(
-            label_for(Path::new(r"D:\tools\SomeEditor.exe")),
-            "SomeEditor"
-        );
+        assert_eq!(label_for(&exe("tools", "SomeEditor")), "SomeEditor");
         assert_eq!(label_for(Path::new("")), "");
-        assert_eq!(stem_of(Path::new(r"C:\x\Code.exe")), "code");
+        assert_eq!(stem_of(&exe("x", "Code")), "code");
     }
 
     #[test]
     fn the_terminal_family_gets_the_chord_a_terminal_understands() {
-        for exe in SHIFT_PASTE {
-            let path = format!(r"C:\bin\{exe}.exe");
+        for stem in SHIFT_PASTE {
             assert!(
-                wants_shift(Path::new(&path)),
-                "{exe} is in the family and must get Ctrl+Shift+V"
+                wants_shift(&exe("bin", stem)),
+                "{stem} is in the family and must get Ctrl+Shift+V"
             );
         }
 
         // And nothing else does. Ctrl+Shift+V is "paste without formatting" in a browser and
         // in Word, which would be a different result rather than no result.
-        for exe in ["code", "chrome", "msedge", "winword", "notepad", "slack"] {
-            let path = format!(r"C:\bin\{exe}.exe");
-            assert!(!wants_shift(Path::new(&path)), "{exe} takes Ctrl+V");
+        for stem in ["code", "chrome", "msedge", "winword", "notepad", "slack"] {
+            assert!(!wants_shift(&exe("bin", stem)), "{stem} takes Ctrl+V");
         }
     }
 
@@ -328,10 +335,15 @@ mod tests {
     /// application, so enumerating the spawned pid's windows finds nothing at all — which is
     /// exactly the shape of problem this whole module exists to get right, and it is fitting
     /// that the test hit it first.
+    ///
+    /// Windows only, and not because of Notepad: on a platform with no clipboard module there
+    /// is no paste path to put under test, and a test that asserted the absence of one would
+    /// pass for the wrong reason.
+    #[cfg(windows)]
     #[test]
     #[ignore = "spawns Notepad and takes the machine's clipboard"]
     fn a_dictation_pasted_into_notepad_arrives_and_the_clipboard_comes_back() {
-        use crate::win32::{Hwnd, window};
+        use crate::platform::{Hwnd, window};
         use std::time::{Duration, Instant};
 
         let paster = Paster::start().expect("the clipboard agent starts");

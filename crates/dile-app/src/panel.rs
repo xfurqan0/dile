@@ -9,9 +9,12 @@
 //! That is the whole design, and everything else follows from it. The panel is created with
 //! `focusable: false`, which on Windows is `WS_EX_NOACTIVATE` — `tao` sets exactly that bit
 //! for that flag, so there is no need to reach for the `windows` crate to put it there, and
-//! [`crate::win32::Hwnd::is_non_activating`] is how it gets read back and checked. A window
-//! that cannot be activated means the editor behind it keeps the caret, keeps its selection
-//! and keeps its focus ring, so the paste at the end goes where the user was already looking.
+//! `Hwnd::is_non_activating` is how it gets read back and checked. A window that cannot be
+//! activated means the editor behind it keeps the caret, keeps its selection and keeps its
+//! focus ring, so the paste at the end goes where the user was already looking. The flag has
+//! no equivalent under Wayland at all — `xdg-shell` has no request for "do not activate me",
+//! because the compositor alone decides — which is one of the reasons `src/platform` has a
+//! module that answers no rather than a second implementation.
 //!
 //! Three consequences:
 //!
@@ -61,9 +64,9 @@ use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WindowEvent};
 
 use crate::paste::{Outcome, Paster};
+use crate::platform::{Hwnd, Monitor, window};
 use crate::settings::{PanelPosition, SettingsStore};
 use crate::ui::Ui;
-use crate::win32::{Hwnd, Monitor, window};
 
 /// The window label, which is also what `capabilities/default.json` matches on.
 pub const WINDOW: &str = "panel";
@@ -223,20 +226,7 @@ impl Panel {
                     moved.remember(position.x, position.y);
                 }
             });
-            // The style bit the whole design rests on, read back off the real window rather
-            // than assumed from the configuration file.
-            match window
-                .hwnd()
-                .ok()
-                .and_then(|handle| Hwnd::from_isize(handle.0 as isize))
-            {
-                Some(handle) => log::info!(
-                    "panel window: hwnd {:#x}, non-activating {}",
-                    handle.as_isize(),
-                    handle.is_non_activating()
-                ),
-                None => log::warn!("the panel window has no handle to check the style on"),
-            }
+            report_window_style(&window);
         } else {
             log::error!("there is no panel window, so no dictation has anywhere to go");
         }
@@ -753,6 +743,42 @@ impl Panel {
     }
 }
 
+/// Say whether the card can actually refuse the focus, read off the real window.
+///
+/// The style bit the whole design rests on, read back rather than assumed from the
+/// configuration file: `focusable: false` is a request, and a request that was quietly not
+/// honoured is the difference between a panel and a thief.
+#[cfg(windows)]
+fn report_window_style(window: &tauri::WebviewWindow) {
+    match window
+        .hwnd()
+        .ok()
+        .and_then(|handle| crate::platform::win32::window::Hwnd::from_isize(handle.0 as isize))
+    {
+        Some(handle) => log::info!(
+            "panel window: hwnd {:#x}, non-activating {}",
+            handle.as_isize(),
+            handle.is_non_activating()
+        ),
+        None => log::warn!("the panel window has no handle to check the style on"),
+    }
+}
+
+/// The same report, on a platform where the answer is known in advance.
+///
+/// There is no style bit to read: `xdg-shell` has no "do not activate me" request, so
+/// `focusable: false` is accepted by Tauri and means nothing to the compositor. A card that
+/// may take the focus is a different product from the one this module documents, and a
+/// person running it deserves to be told that at start-up rather than to work it out from a
+/// caret that stopped blinking.
+#[cfg(not(windows))]
+fn report_window_style(window: &tauri::WebviewWindow) {
+    let _ = window;
+    log::warn!(
+        "panel window: this platform has no non-activating window style, so the card may take the focus from whatever you are typing in"
+    );
+}
+
 /// The card's default place: centred on the work area, below the top edge.
 fn top_centre(monitor: &Monitor, scale: f64) -> PanelPosition {
     let width = (WIDTH * scale).round() as i32;
@@ -1011,8 +1037,8 @@ mod tests {
         BASE_HEIGHT, CARD_BASE, CARD_MAX, GUTTER, MAX_HEIGHT, PanelPayload, ResultPayload, WIDTH,
         clamp_into, top_centre,
     };
+    use crate::platform::screen::{Monitor, Rect};
     use crate::settings::PanelPosition;
-    use crate::win32::window::{Monitor, Rect};
 
     fn monitor(left: i32, top: i32) -> Monitor {
         Monitor {

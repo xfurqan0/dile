@@ -8,7 +8,7 @@ that way.
 `docs/BUILDING.md` has the prerequisites and the traps. The short version:
 
 ```powershell
-rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup toolchain install stable
 cargo install tauri-cli --locked
 
 # First, and before every cargo command: the application declares two sidecar binaries,
@@ -21,6 +21,19 @@ cargo tauri build --debug --no-bundle
 
 You need CMake and MSVC. You do **not** need the Vulkan SDK unless you are working on the
 GPU path — that is what `-Cpu` is for.
+
+The workspace also builds and tests on Linux, and CI runs the same gate there. Same shape,
+one script name and a handful of system packages apart:
+
+```bash
+scripts/build-host.sh --cpu --debug
+
+cargo test --workspace
+cargo tauri build --debug --no-bundle
+```
+
+`docs/BUILDING.md`, "Building on Linux", has the package list and — more to the point — what
+does and does not work there yet. Windows is still the platform Dile ships on.
 
 ## The rules
 

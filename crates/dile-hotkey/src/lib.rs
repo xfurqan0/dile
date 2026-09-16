@@ -10,7 +10,7 @@
 //! | Layer | Module | Depends on |
 //! |---|---|---|
 //! | The rules | [`state`] | nothing but `std` |
-//! | The operating system | [`listener`] | `handy-keys`, Windows only |
+//! | The operating system | [`listener`] | `handy-keys`, on Windows and Linux |
 //!
 //! **One trigger, two shapes.** [`Trigger`] is either one modifier key held on its own — the
 //! right Ctrl, which is what Dile ships — or a chord such as `Ctrl+Alt+Space`, which is what a
@@ -26,8 +26,13 @@
 //! microseconds. [`listener`] is then allowed to be thin, because it holds no rules — it
 //! translates virtual-key codes into [`Event`]s, feeds them in, and forwards what comes back.
 //!
-//! It is also why a macOS or Linux port is a module rather than a rewrite: the rules are
-//! already portable, and they are already tested on every platform this workspace builds on.
+//! It is also why a macOS port is a module rather than a rewrite: the rules are already
+//! portable, and they are already tested on every platform this workspace builds on. Linux
+//! turned out to need less than that — `handy-keys` reads `/dev/input/event*` directly, which
+//! needs neither an X11 nor a Wayland connection and keeps the right Ctrl distinguishable
+//! from the left one, so [`listener`] compiles there unchanged. The cost is moved rather than
+//! removed: those devices are readable only with a permission a distribution does not grant
+//! by default, and [`Error`] is where that is said in a sentence.
 //!
 //! ## The four verbs, and the three WP5b added
 //!
@@ -67,16 +72,16 @@ pub use keys::{
 };
 pub use state::{Action, Actions, Event, HotkeyMachine, PanelKey};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod capture;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod listener;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub use capture::{Capture, next_trigger};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub use listener::{Emitted, HotkeyListener, Remote};
 
 /// The version of this crate, for the settings page and bug reports.

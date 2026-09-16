@@ -91,6 +91,78 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The same gate, on the platform the port is being built for. Not a smoke test: it runs the
+  # whole suite, because the point of the Linux job is the several hundred assertions that had
+  # never been evaluated anywhere but Windows — one of which was wrong the first time it ran
+  # here, and was about paths rather than about Linux (`paste.rs`, the fixture helper).
+  #
+  # `ubuntu-22.04` rather than `ubuntu-latest`, and deliberately: a binary built against an
+  # older glibc runs on the newer distributions as well, and the reverse is not true. A job
+  # that proves the build on the newest image only proves it for the newest image.
+  linux:
+    name: Linux — lint, test, build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Tauri v2's own list, plus one. `libasound2-dev` is the extra and it is not optional:
+      # `alsa-sys` looks `alsa.pc` up through pkg-config and has no vendored source, so
+      # `dile-capture` does not compile without it — and cpal needs ALSA even where PipeWire
+      # or PulseAudio is what actually serves the stream.
+      - name: Install the system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libasound2-dev
+
+      - name: Check CMake is present
+        run: cmake --version
+
+      # The same sidecar rule as on Windows, for the same reason: `tauri-build` checks
+      # `bundle.externalBin` in its build script, so a missing one fails clippy and the tests
+      # and not only the bundler. `--cpu` skips the Vulkan loader, the headers and glslc,
+      # which a runner with no GPU could not exercise anyway.
+      - name: Prepare the sidecars
+        run: ./scripts/build-host.sh --cpu --debug
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        run: cargo test --workspace
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # `--no-bundle` for the same reason as on Windows: what this proves is that the
+      # application links and that `generate_context!` expands, and a bundler problem must not
+      # make a correct change look broken. The `deb` and `rpm` targets are declared in
+      # `tauri.linux.conf.json`, which the CLI merges over `tauri.conf.json` on this platform.
+      - name: Build the tray application
+        run: cargo tauri build --debug --no-bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dile-debug-linux
+          path: target/debug/dile-app
+          if-no-files-found: error
+          retention-days: 14
+
   # Licences, advisories, duplicate versions and unexpected sources, from deny.toml. On Linux
   # because it resolves the dependency graph rather than building it, and because it must not
   # add minutes to the job that decides whether the code is correct.

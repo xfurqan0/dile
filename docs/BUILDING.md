@@ -1,20 +1,23 @@
 # Building Dile
 
-Windows is the only platform v1 builds on. macOS and Linux come from the same codebase in
-v2, and `dile-core` already builds everywhere because it has no platform in it.
+Windows is the platform v1 ships on, and everything below is written for it unless it says
+otherwise. **The workspace also builds, lints and tests on Linux** — that is what "Building on
+Linux" at the end of this file is about, and it is a build rather than a release: the trigger,
+the microphone and the engine work there, and the two things that need a desktop (placing the
+card, pasting the text) do not yet. macOS comes from the same codebase later.
 
 ## Prerequisites
 
 | What | Why | Needed for |
 |---|---|---|
-| **Rust, stable, `x86_64-pc-windows-msvc`** | `rust-toolchain.toml` pins the channel and the components | everything |
+| **Rust, stable** | `rust-toolchain.toml` pins the channel and the components. No target list: rustup installs the host's, and this workspace is never cross-compiled | everything |
 | **Visual Studio Build Tools** with the *Desktop development with C++* workload | the MSVC linker, and the compiler that builds `transcribe.cpp` | everything |
 | **CMake** ≥ 3.20 | `transcribe-cpp-sys` builds its native library from source through CMake | everything |
 | **WebView2** | the panel's runtime. Part of Windows 10 1803+ and Windows 11; the installer downloads a bootstrapper if it is missing | running the app |
 | **Vulkan SDK** ≥ 1.3 | the GPU backend's headers, `vulkan-1.lib` and `glslc`, which compiles about two thousand SPIR-V shaders | the `gpu-vulkan` feature only |
 
 ```powershell
-rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup toolchain install stable
 cargo install tauri-cli --locked
 ```
 
@@ -518,6 +521,122 @@ Then trim the near-silent head and tail to about two seconds and write a canonic
 header. `Where-Object { $_.Language -like 'tr*' }` returning nothing means no Turkish voice is
 installed: **stop there.** An English clip, or a synthetic tone, would make the probe test
 something other than what it exists to test.
+
+## Building on Linux
+
+The workspace builds, lints, tests and links on Linux, and CI runs the whole gate there on
+every push. What that buys is a second platform for every assertion in the suite, which is
+worth having on its own: the first Linux run found a set of path fixtures that had only ever
+been true on Windows.
+
+What is **not** there yet is the desktop half. `src/platform/` is a seam with two
+implementations behind it — `win32/` and `unported.rs` — and on Linux the second one answers.
+Concretely:
+
+| | On Linux today |
+|---|---|
+| The trigger, hold-to-talk, right Ctrl | works, and needs read access to `/dev/input/event*` |
+| Microphone, pre-roll, VAD, 16 kHz | works, through ALSA (which is also how cpal reaches PipeWire) |
+| The engine, `dile transcribe`, model download | works; CPU tier |
+| Tray icon and menu | works, and on GNOME needs the AppIndicator extension |
+| Placing the card on a screen | **no** — `xdg-shell` has no global coordinate space |
+| Naming the target application | **no** — a Wayland client is not told what has the focus |
+| Clipboard and automatic paste | **no** — the text stays in the card to be taken by hand |
+
+The application says each of those in the log at start-up rather than failing quietly.
+
+### System packages
+
+```bash
+# Fedora
+sudo dnf install alsa-lib-devel cmake gcc-c++ \
+  webkit2gtk4.1-devel gtk3-devel libsoup3-devel javascriptcoregtk4.1-devel \
+  librsvg2-devel libayatana-appindicator-gtk3-devel libxdo-devel
+
+# Debian and Ubuntu
+sudo apt install libasound2-dev cmake build-essential \
+  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+  libayatana-appindicator3-dev libxdo-dev
+```
+
+`alsa-lib-devel` (`libasound2-dev`) is the one that is easy to miss and impossible to work
+around: `alsa-sys` looks for `alsa.pc` through pkg-config and carries no vendored source, so
+without it `dile-capture` stops with *"The system library `alsa` required by crate `alsa-sys`
+was not found"*. It is needed even on a machine where PipeWire is what actually serves the
+stream — cpal reaches PipeWire through ALSA's compatibility layer.
+
+Two more, for the GPU build only, and skipped by `--cpu`:
+
+```bash
+sudo dnf install vulkan-loader-devel vulkan-headers glslc    # Fedora
+sudo apt install libvulkan-dev glslc                         # Debian and Ubuntu
+```
+
+### The build
+
+Same shape as the Windows one, and the sidecar rule is the same rule: `tauri-build` checks
+`bundle.externalBin` in its build script, so both binaries have to be on disk before anything
+compiles `dile-app` — `cargo clippy` and `cargo test` included.
+
+```bash
+scripts/build-host.sh --cpu --debug
+
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo tauri build --debug --no-bundle
+```
+
+`scripts/build-host.sh` is `scripts/build-host.ps1` in shell spelling: `--cpu` is `-Cpu`,
+`--debug` is `-DebugBuild`, and both PowerShell forms are accepted too. It copies the two
+sidecars into `crates/dile-app/binaries/` under the host triple and without a `.exe`, which
+is the name `bundle.externalBin` looks for here.
+
+**The GPU check is the mirror of the Windows one.** There is no SDK on Linux and therefore no
+`LIB` to set; the three pieces are distribution packages, and the script asks pkg-config and
+`PATH` for them before spending the minutes rather than letting CMake say `Could NOT find
+Vulkan (missing: Vulkan_LIBRARY Vulkan_INCLUDE_DIR glslc)` at the end of one.
+
+**`--cpu` is the sane default here for a second reason.** `whisper.cpp` has an open, unfixed
+`DeviceLost` fault on Intel integrated graphics under Mesa, so the CPU tier is the one a Linux
+build should trust until the probe has said otherwise on a particular machine. The engine
+runs in its own process precisely so that a driver fault takes the engine down and not the
+tray, which makes this a slower tier rather than a broken application — `docs/PROJECT.md` §3.
+
+### Bundles
+
+`crates/dile-app/tauri.linux.conf.json` sets `bundle.targets` to `deb` and `rpm`; the Tauri
+CLI merges it over `tauri.conf.json` on this platform, and `nsis` stays where it is for
+Windows. `cargo tauri build --debug` produces both under `target/debug/bundle/`, each
+carrying `dile-app`, `dile-engine-host` and `dile` in `/usr/bin`.
+
+**No AppImage.** Tauri's AppImage bundler downloads `appimagetool` and a copy of `patchelf`
+at bundle time and rewrites the binary's interpreter path; it is a second packaging format
+with a second set of failure modes, for an audience that `deb` and `rpm` already cover. It
+can be added when there is somebody to add it for.
+
+### Where things live
+
+`crates/dile-client/src/paths.rs` had the XDG branch written before any of this ran, and it
+is the one that answers here:
+
+| | Path |
+|---|---|
+| Settings, `engine.json` | `$XDG_CONFIG_HOME/io.github.xfurqan0.dile/`, else `~/.config/io.github.xfurqan0.dile/` |
+| Models | `$XDG_DATA_HOME/io.github.xfurqan0.dile/models/`, else `~/.local/share/io.github.xfurqan0.dile/models/` |
+
+`DILE_MODEL_DIR` overrides the second one in a debug build, which is how a machine that
+already holds these weights avoids downloading a second copy.
+
+### The tray on GNOME
+
+GNOME has no built-in `StatusNotifierItem` host and no plan for one, so a tray icon is
+registered on D-Bus successfully, reports no error, and appears nowhere. The extension is the
+only answer:
+
+```bash
+gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
+```
 
 ## Troubleshooting
 

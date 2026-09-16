@@ -41,21 +41,21 @@
 
 // A tray app has no console. Kept in debug builds so `cargo tauri dev` still prints.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// `deny` rather than `forbid`, and `src/win32/` is the reason: WP5b's paste has no safe
-// wrapper anywhere in the stack, and `forbid` cannot be lifted even by the module that needs
-// it. Every other module in this crate is still unsafe-free, and `win32`'s own documentation
-// says what the exception buys and where its boundary is.
+// `deny` rather than `forbid`, and `src/platform/win32/` is the reason: WP5b's paste has no
+// safe wrapper anywhere in the stack, and `forbid` cannot be lifted even by the module that
+// needs it. Every other module in this crate is still unsafe-free, and `platform`'s own
+// documentation says what the exception buys and where its boundary is.
 #![deny(unsafe_code)]
 
 mod engine;
 mod i18n;
 mod panel;
 mod paste;
+mod platform;
 mod session;
 mod settings;
 mod tray;
 mod ui;
-mod win32;
 
 use std::sync::{Arc, RwLock};
 

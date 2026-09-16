@@ -1,5 +1,12 @@
+# No `targets` line, on purpose. It used to pin `x86_64-pc-windows-msvc`, which is the host on
+# the machine that built this and therefore bought nothing — rustup installs the host target
+# regardless. On a Linux machine it stopped being free: rustup downloaded a Windows standard
+# library nothing on that host can link, on every checkout. Cross-compilation is not how this
+# workspace ships — `transcribe-cpp-sys` builds a native library through CMake and the bundler
+# runs on the platform it bundles for — so a target list here would have to name every
+# platform rather than one, and every machine would pay for the others.
+
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-pc-windows-msvc"]
 profile = "minimal"

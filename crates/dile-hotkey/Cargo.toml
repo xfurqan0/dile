@@ -21,16 +21,25 @@ thiserror = "2"
 # reports this way, and `log` is a facade: a crate that installs no logger writes nowhere.
 log = "0.4.34"
 
-# Only the OS adapter needs this, and only Windows has an adapter today. Gating the
-# dependency on the target keeps the state machine in `state.rs` buildable and testable on
-# every platform — the same rule `dile-core` follows — and keeps `evdev` and the `objc2`
-# family out of the dependency graph until the ports in WP7 actually need them.
+# Only the OS adapter needs this, and two platforms have one. Gating the dependency on the
+# target keeps the state machine in `state.rs` buildable and testable on every platform — the
+# same rule `dile-core` follows — and keeps the `objc2` family out of the dependency graph
+# until a macOS port actually needs it.
 #
 # `handy-keys` rather than `rdev`: `docs/PROJECT.md` §3 made that call because the Windows
 # "Released" event in the alternatives was a 50 ms poll that burned a core. This crate is
 # the one `handy-keys` was extracted from (Handy), so the Windows low-level hook path is
 # the one its own product runs on.
-[target.'cfg(target_os = "windows")'.dependencies]
+#
+# Linux was added because the crate turned out to have got there first. `handy-keys` carries a
+# complete evdev backend — it reads `/dev/input/event*` directly, so it needs no X11 and no
+# Wayland connection and behaves the same on both and on a bare console — and it keeps the two
+# properties Dile's trigger is built on that every X11-era alternative loses: the right Ctrl is
+# distinguishable from the left one, and a modifier held on its own is a hotkey. Everything
+# this crate imports is exported unconditionally by `handy_keys`, so `listener.rs` and
+# `capture.rs` compile here unchanged. What differs is permission, not code: reading those
+# devices needs a udev rule, and `error.rs` is where that is turned into a sentence.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 handy-keys = "0.3.4"
 
 # The probe example reports the keyboard layout of the focused window, which is how
