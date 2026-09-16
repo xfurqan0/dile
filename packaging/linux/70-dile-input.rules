@@ -32,14 +32,19 @@
 # The number matters: uaccess tags are collected by 73-seat-late.rules, so a rule that
 # applies one has to be read before it. Anything below 73 works; 70 leaves room.
 #
-# Install by hand:
+# **The .deb and the .rpm install this file**, at /usr/lib/udev/rules.d/, and their
+# post-install script reloads udev so that it takes effect without a logout — see
+# packaging/linux/post-install.sh. That is a decision rather than a default: a package that
+# asked for the permission at first launch instead would be asking in a dialog, from a tray
+# application, about a file only root can write, and the honest place to say what a package
+# grants is the package.
+#
+# From a source build, by hand, which is the same two commands the package runs:
 #
 #   sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload && sudo udevadm trigger
 #
-# It takes effect immediately and needs no logout. The .deb and .rpm are not installing it
-# yet — that is a packaging decision, not a technical one, and it belongs with the release
-# rather than with the port.
+# It takes effect immediately and needs no logout.
 
 SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"
 KERNEL=="uinput", TAG+="uaccess"

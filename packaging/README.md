@@ -12,11 +12,49 @@ device to whoever is logged in at the seat and takes it back when they log out, 
 included — the ability to read every keystroke on the machine for as long as the account
 exists. The file says the same thing at length, including what the rule honestly costs.
 
-**The packages do not install it yet.** `deb` and `rpm` could run it from a post-install
-script and an AppImage could offer it through `pkexec` on first run, and both of those are
-decisions about what a first launch is allowed to ask for. Until then the file is documented
-in `docs/BUILDING.md` and installed by hand, and `dile-hotkey` names it in the one error that
-a person who needs it will actually see.
+**The packages install it**, at `/usr/lib/udev/rules.d/`, and run `post-install.sh`
+afterwards so that it takes effect without a logout. The alternative — asking at first launch
+through `pkexec` — was declined: a tray application raising a password prompt about a file
+only root can write, at the moment somebody first presses a key, is a worse question than the
+same one asked by `dnf install`. A source build installs the file by hand;
+`docs/BUILDING.md`, "Keyboard access on Linux", is the two commands and what they grant, and
+`dile-hotkey` names the file in the one error a person who needs it will actually see.
+
+## linux/post-install.sh
+
+`udevadm control --reload-rules` and `udevadm trigger --subsystem-match=input`, guarded so
+that neither can fail an installation. **One file for both packages**: `tauri-bundler` copies
+it into the `.deb` as `postinst`, where the shebang matters, and reads the same bytes into the
+`.rpm`'s `%post`, where rpm runs the body under `/bin/sh` and the shebang is a comment.
+
+## What the Linux packages depend on, and what decides it
+
+`tauri-cli` writes four of the dependencies itself — webkit2gtk, gtk3 and the appindicator, as
+package names in the `.deb` and as sonames in the `.rpm` — and **it takes the appindicator's
+name from what pkg-config can see on the building machine**. With
+`ayatana-appindicator3-0.1` present the packages name the maintained library; without it they
+quietly name the 2018 `libappindicator3-1` instead, and nothing says so.
+`scripts/build-installer.sh` checks for it before it compiles anything and refuses to build a
+release without it, because a published package that asks for the wrong library is worse than
+one that does not exist.
+
+Everything else is written by hand in `crates/dile-app/tauri.linux.conf.json`, and the list is
+short on purpose — a dependency that is already implied by another one is a line that can only
+go stale:
+
+| Declared | Why it is not implied |
+|---|---|
+| ALSA (`libasound2t64 \| libasound2`, `libasound.so.2`) | `dile-capture` links it directly, and nothing else in the tree pulls it in. cpal reaches PipeWire through it, so it is needed on a PipeWire desktop too |
+| `libstdc++6` / `libstdc++.so.6` | `dile-engine-host` is the one binary here with C++ in it, and it is a sidecar rather than the thing the bundler looks at |
+
+Not declared, deliberately: **libX11 and libXi**, which `x11-dl` opens at run time and which
+GTK3 already requires; and **ca-certificates**, because the model download goes through
+`rustls` with `webpki-roots` compiled in and never reads the system trust store.
+
+The `|` in the ALSA line is Debian's own alternative syntax, and `tauri-bundler` writes the
+string through verbatim. `libasound2` was renamed `libasound2t64` in the 64-bit-time_t
+transition, so a package built on Ubuntu 22.04 that named only the old one would be relying on
+a compatibility `Provides` that exists today and is not promised forever.
 
 ## winget manifests
 

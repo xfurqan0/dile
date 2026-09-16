@@ -204,6 +204,87 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # The Linux packages, on the platform they are for. A second job rather than a matrix on the
+  # first one: the two builds share no step — different sidecar script, different bundler,
+  # different signing story (there is none here), and a `matrix` whose every step is an `if`
+  # is a harder thing to read than two jobs that say what they do.
+  #
+  # **ubuntu-22.04 rather than ubuntu-latest**, and deliberately, for the same reason `ci.yml`
+  # pins it: a binary built against an older glibc runs on newer distributions as well, and
+  # the reverse is not true. A release built on the newest image is a release for the newest
+  # image.
+  build-linux:
+    name: Build the Linux packages
+    needs: [verify, audit]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      # Tauri v2's own list, plus two. `libasound2-dev` is what `dile-capture` compiles
+      # against and `libayatana-appindicator3-dev` is what decides the **name of the tray
+      # dependency written into the finished packages**: without it `tauri-cli` quietly writes
+      # the 2018 `libappindicator3-1` instead. `scripts/build-installer.sh` refuses to build a
+      # release without it rather than trusting this list to stay correct.
+      - name: Install the system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libasound2-dev
+
+      - name: Check CMake is present
+        run: cmake --version
+
+      # The remapped environment, the sidecars, `cargo tauri build`, then the check for
+      # build-machine paths — in that order, which is why it is one script and not four steps.
+      # It **deletes the bundle** if any of the three binaries carries the path of the machine
+      # that built it, which on a runner is `/home/runner` and on a laptop is somebody's name.
+      - name: Build
+        run: ./scripts/build-installer.sh
+
+      - name: Collect the artefacts
+        run: |
+          mkdir -p dist
+          cp target/release/bundle/deb/*.deb dist/
+          cp target/release/bundle/rpm/*.rpm dist/
+          (cd dist && sha256sum ./*.deb ./*.rpm | sed 's| \./| |' > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      # The same provenance the Windows installer gets, and for the same reason: it is signed
+      # by GitHub and names the workflow run and the commit that produced these exact bytes,
+      # which is the strongest thing a downloader can check while nothing here is code-signed.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dile-linux
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
   # Written, reviewed, and switched off. docs/CODE_SIGNING.md explains the whole plan; the
   # short version is that SignPath Foundation asks a project to be released and maintained
   # before it applies, so the first release ships unsigned and this job waits.
@@ -256,7 +337,7 @@ jobs:
   # A draft. Not a release: the notes are read by a person, and publishing is their click.
   draft:
     name: Draft release
-    needs: build
+    needs: [build, build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -264,10 +345,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Two artefacts into two directories, because both of them carry a file called
+      # `SHA256SUMS` and one would land on top of the other.
       - uses: actions/download-artifact@v4
         with:
           name: dile-windows
-          path: dist
+          path: dist-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dile-linux
+          path: dist-linux
+
+      # One `SHA256SUMS` on the release rather than two half ones: a person checking a
+      # download should not have to work out which file to read. The lines are the ones each
+      # build machine wrote about its own bytes — this concatenates them, it does not hash
+      # anything itself.
+      - name: Put the two builds together
+        run: |
+          mkdir -p dist
+          find dist-windows dist-linux -maxdepth 1 -type f ! -name SHA256SUMS \
+            -exec cp {} dist/ \;
+          cat dist-windows/SHA256SUMS dist-linux/SHA256SUMS > dist/SHA256SUMS
+          ls -l dist
+          cat dist/SHA256SUMS
 
       - name: Create the draft
         env:

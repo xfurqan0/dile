@@ -21,7 +21,11 @@ edition = "2024"
 # MSRV the fixed tree cannot build under would be a lie in the manifest.
 rust-version = "1.88"
 license = "MIT"
-authors = ["Furkan Yıldız"]
+# The name **and** the address, because one of them is a package field rather than a
+# courtesy: `Maintainer:` in a Debian control file is expected to carry an email, and
+# `tauri-bundler` takes it from here and nowhere else. Nothing else in the workspace reads
+# `CARGO_PKG_AUTHORS`, so the Windows installer is untouched by the addition.
+authors = ["Furkan Yıldız <xfurqan0@users.noreply.github.com>"]
 repository = "https://github.com/xfurqan0/dile"
 homepage = "https://github.com/xfurqan0/dile"
 description = "Hold a key, speak, let go. Local, Turkish-first push-to-talk dictation."

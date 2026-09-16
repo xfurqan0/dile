@@ -228,27 +228,8 @@ inside the application.
 
 ## Known limits
 
-- **Windows is what ships. Linux is a preview, and it works differently on purpose.** There
-  is no Linux release yet; what there is, is a build you can run from source, and on it the
-  trigger, the microphone, the engine and the Turkish layer all work. **A dictation goes on
-  the clipboard rather than into what you are typing in** — the card says *copied — press
-  Ctrl+V to paste*, and you press it. That is not a missing feature waiting for a version:
-  a Wayland client is never told which window has the focus, so Dile cannot promise to put a
-  sentence in the right place, and it will not paste into the wrong one instead. Three more
-  things follow from the same rule, and are worth knowing before you try it: **the card lands
-  where the compositor puts it** rather than top-centre, **it takes the keyboard** while it is
-  up, and **the target application is not named** on it. There is an experimental setting that
-  presses `Ctrl+V` for you — off unless you turn it on, and honest about what it is: the chord
-  goes to whatever holds the keyboard at that moment rather than to a window Dile chose, and
-  in a terminal `Ctrl+V` is not paste. The tray icon needs the AppIndicator
-  extension on GNOME, and the trigger needs one udev rule; the application says so itself if
-  either is missing. `docs/PROJECT.md` §9 is the whole of the reasoning and
-  `docs/BUILDING.md`, "Building on Linux", is how to build it. macOS comes from the same
-  codebase later.
-- **On Linux, quitting Dile can take the clipboard with it.** A Wayland selection belongs to
-  the program that set it, so a dictation you copied and have not pasted goes when Dile does —
-  unless a clipboard manager took a copy, which most desktops have and GNOME does not by
-  default. Paste it before you quit.
+- **Windows is what ships. Linux is a preview, and it works differently on purpose** —
+  "Linux (preview)" below is the whole of it. macOS comes from the same codebase later.
 - Dictation, not transcription. Recording is capped at 60 s by default and 300 s at most;
   meeting recordings, file batches and subtitle files are deliberately out of scope.
 - The CPU fallback tier is slower than real time. It is a fallback, not a mode to choose.
@@ -259,13 +240,85 @@ inside the application.
   `Remove-Item -Recurse "$env:APPDATA\io.github.xfurqan0.dile", "$env:LOCALAPPDATA\io.github.xfurqan0.dile"`.
 - Windows 11 keeps new tray icons in the `^` overflow; drag it onto the taskbar to pin it.
 
+## Linux (preview)
+
+**A preview, and the word is meant.** The trigger, the microphone, the engine, the Turkish
+layer, the panel, the settings window and the command line all work; what a dictation *does*
+at the end is different, and that difference is a decision rather than a gap.
+
+**A dictation goes on the clipboard rather than into what you are typing in.** The card says
+*copied — press Ctrl+V to paste*, and you press it. That is not a missing feature waiting for
+a version: a Wayland client is never told which window has the focus, so Dile cannot promise
+to put a sentence in the right place — and it will not paste into the wrong one instead.
+`docs/PROJECT.md` §9 is the reasoning in full.
+
+### Installing
+
+```bash
+sudo dnf install ./Dile-0.1.0-1.x86_64.rpm     # Fedora and friends
+sudo apt install ./Dile_0.1.0_amd64.deb        # Debian and Ubuntu
+```
+
+The package installs one udev rule and reloads udev, which is what lets the trigger see the
+keyboard; **log out and back in if a key press does nothing**, because the rule grants the
+devices to whoever is logged in at the seat and a session that was already open may not pick
+them up. On GNOME the tray icon needs an extension, and Dile sends a notification saying so if
+nothing is hosting one:
+
+```bash
+gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
+```
+
+There is no Linux package in any distribution's repositories and there will not be one while
+this says preview.
+
+### The five things to know before you try it
+
+Every one of these was measured on GNOME 50 under Wayland rather than read:
+
+1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
+   for the terminal family, and no "that window is gone, so I did not paste" guarantee.
+2. **The card lands where the compositor puts it**, not top-centre. `xdg-shell` has no global
+   coordinate space, and the protocol that would place a HUD is not available on GNOME. The
+   per-monitor drag memory does nothing here.
+3. **The card takes the keyboard** while it is on screen. `focusable: false` has no Wayland
+   equivalent — and that is what makes the copy work at all, because a client may set the
+   clipboard only while it holds the keyboard.
+4. **The trigger needs a permission.** The udev rule the package installs tags the input
+   devices `uaccess`, so while you are logged in at that machine, a program running as you can
+   read the keyboard whatever window has the focus. That is what a push-to-talk key on a lone
+   right Ctrl costs under Wayland; Dile's side of it is that the audio and the text never leave
+   the machine. `docs/BUILDING.md`, "Keyboard access on Linux", says it at length.
+5. **The tray icon needs an extension on GNOME.** Without one it is registered successfully,
+   reports no error and appears nowhere.
+
+### Two more, and then the honest list is finished
+
+- **Quitting Dile can take the clipboard with it.** A Wayland selection belongs to the program
+  that set it, so a dictation you copied and have not pasted goes when Dile does — unless a
+  clipboard manager took a copy, which most desktops have and GNOME does not by default. Paste
+  it before you quit.
+- **There is an experimental setting that presses `Ctrl+V` for you.** *Experimental: press
+  Ctrl+V for me*, in Settings, off unless you turn it on. It is honest about what it is: the
+  chord goes to whatever holds the keyboard at that moment rather than to a window Dile chose,
+  and **in a terminal `Ctrl+V` is not paste** — most of them paste on `Ctrl+Shift+V`, and
+  picking that per application means knowing what the application is, which is limit 1. The
+  text is on the clipboard either way.
+
+**The Linux packages carry the CPU engine**, which is slower than real time and is a fallback
+rather than a mode to choose. Linux never probes the GPU tier and never selects it for you:
+whisper.cpp has an open, unfixed fault on Intel integrated graphics under Mesa, and choosing a
+tier that crashes on somebody's machine is worse than being slow on it. `Settings > Engine >
+Tier` goes straight to Vulkan on an engine host built from source with that feature on.
+
 ## Roadmap
 
 - **v1** — Windows, hold-to-talk, local engine with GPU support, Turkish cleanup, personal
   dictionary, review panel, paste into the active window, minimal CLI. This release.
 - **v2** — a Turkish fine-tune of our own; "brief mode", which turns what you said into a
-  structured instruction for a coding agent; macOS and Linux builds. The Linux one is
-  under way: the trigger, the microphone and the engine run there today.
+  structured instruction for a coding agent; macOS and Linux builds. The Linux one is a
+  preview today — it installs, it dictates, and the section above says exactly how it
+  differs.
 - **later** — live streaming, per-app profiles, translation.
 
 ## Building
@@ -282,11 +335,12 @@ cargo tauri build --debug --no-bundle
 ```
 
 On Linux the same three steps are `scripts/build-host.sh --cpu --debug` and then the two cargo
-lines, plus a handful of `-dev` packages. **The trigger needs one udev rule there** — Dile
-reads key presses from the kernel's input devices, which is the only way hold-to-talk on a
-lone right Ctrl works under Wayland, and no distribution grants that by default.
-`packaging/linux/70-dile-input.rules` is the rule and "Keyboard access on Linux" in
-`docs/BUILDING.md` says plainly what it grants.
+lines, plus a handful of `-dev` packages; `scripts/build-installer.sh` is what builds the
+`.deb` and the `.rpm`. **The trigger needs one udev rule there** — Dile reads key presses from
+the kernel's input devices, which is the only way hold-to-talk on a lone right Ctrl works under
+Wayland, and no distribution grants that by default. The packages install the rule;
+a source build installs `packaging/linux/70-dile-input.rules` by hand, and "Keyboard access on
+Linux" in `docs/BUILDING.md` says plainly what it grants.
 
 [docs/BUILDING.md](docs/BUILDING.md) has the prerequisites, the traps and how the installer is
 built; [docs/RELEASE.md](docs/RELEASE.md) is the release checklist;

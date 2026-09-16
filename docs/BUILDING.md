@@ -622,17 +622,91 @@ build should trust until the probe has said otherwise on a particular machine. T
 runs in its own process precisely so that a driver fault takes the engine down and not the
 tray, which makes this a slower tier rather than a broken application — `docs/PROJECT.md` §3.
 
-### Bundles
+### The packages
 
-`crates/dile-app/tauri.linux.conf.json` sets `bundle.targets` to `deb` and `rpm`; the Tauri
-CLI merges it over `tauri.conf.json` on this platform, and `nsis` stays where it is for
-Windows. `cargo tauri build --debug` produces both under `target/debug/bundle/`, each
-carrying `dile-app`, `dile-engine-host` and `dile` in `/usr/bin`.
+```bash
+scripts/build-installer.sh
+```
 
-**No AppImage.** Tauri's AppImage bundler downloads `appimagetool` and a copy of `patchelf`
-at bundle time and rewrites the binary's interpreter path; it is a second packaging format
-with a second set of failure modes, for an audience that `deb` and `rpm` already cover. It
-can be added when there is somebody to add it for.
+`scripts/build-installer.ps1` in shell spelling, and the same five steps in the same order:
+the tray check, the remapped environment, the sidecars, `cargo tauri build`, and then a check
+that reads the binaries back. It prints the three programs and both packages with their sizes
+and each package's SHA-256, which is what `docs/RELEASE.md` asks to be kept.
+
+`crates/dile-app/tauri.linux.conf.json` is the configuration: `bundle.targets` is `deb` and
+`rpm`, the Tauri CLI merges the file over `tauri.conf.json` on this platform, and `nsis` stays
+where it is for Windows. `cargo tauri build --debug` produces both under `target/debug/bundle/`
+without any of the release machinery, which is the quick way to look at what a package
+contains.
+
+What goes in:
+
+| Path | What |
+|---|---|
+| `/usr/bin/dile-app` | the tray application |
+| `/usr/bin/dile-engine-host` | the engine, in its own process |
+| `/usr/bin/dile` | the command line |
+| `/usr/lib/Dile/` | `LICENSE.txt` and `THIRD-PARTY-NOTICES.md` |
+| `/usr/share/applications/Dile.desktop` | the launcher entry, with `StartupWMClass=dile-app` |
+| `/usr/share/icons/hicolor/{32x32,128x128,256x256@2}/apps/dile-app.png` | the icon, three sizes |
+| `/usr/lib/udev/rules.d/70-dile-input.rules` | the keyboard rule, reloaded by the post-install script |
+
+**The tray check is first because it decides a dependency name.** `tauri-cli` writes the
+appindicator dependency from what pkg-config can see *on the building machine*: with
+`ayatana-appindicator3-0.1` present the packages name the maintained library, and without it
+they quietly name the 2018 `libappindicator3-1` instead. Nothing fails and nothing is printed.
+So the script stops rather than warns, and names the package to install. `--legacy-tray`
+builds one anyway for trying the packaging, and says at the end that it is not a release.
+
+**The path check is the other part worth knowing about.** Every `panic!`, `unwrap()` and
+`GGML_ASSERT` compiles the source file it came from in as a string literal, and `strip = true`
+does not touch those — so a release build can carry the path every crate was compiled from,
+which here is `/home/<account>`. Measured on this tree, on the **debug** binaries, which is
+what an unremapped build looks like: **8,884** matches across the three programs, none of them
+visible to any grep over the working tree.
+
+Two different fixes, because there are two compilers:
+
+| Half | Flag | Where |
+|---|---|---|
+| Rust | `--remap-path-prefix`, three prefixes | `CARGO_ENCODED_RUSTFLAGS`, set by the script |
+| C and C++ (ggml, through CMake) | `-ffile-prefix-map=` | `CFLAGS` / `CXXFLAGS`, set by the script |
+
+`scripts/check-binary-paths.sh` is the proof that both still work, and `build-installer.sh`
+**deletes the bundle** if either fails. It reads one encoding rather than the Windows script's
+three: an ELF binary has no resource section, so every string in it is UTF-8. Run it on its
+own whenever something has touched `target/release`:
+
+```bash
+scripts/check-binary-paths.sh
+scripts/check-binary-paths.sh --profile debug   # the control: a build with no remapping
+```
+
+The same trap applies as on Windows: **cargo does not rebuild the native library when
+`CFLAGS` changes**, because `transcribe-cpp-sys` declares no `rerun-if-env-changed` for it. A
+tree that already built ggml without the map keeps what it has, the check goes red naming
+`ggml`, and the fix is `cargo clean -p transcribe-cpp-sys --release` and another run.
+
+**The packages carry the CPU engine host, not the Vulkan one.** Linux does not probe the GPU
+tier and never selects it for anybody, so a Vulkan host in the package would mean a Vulkan
+toolchain in every release build for a tier nothing chooses on its own — and an open,
+unfixed `DeviceLost` fault on Intel integrated graphics under Mesa is the reason it is not
+chosen. `Settings > Engine > Tier` still goes straight to it, on a host built with
+`--features gpu-vulkan` from source; the packages are what a person gets who did not ask.
+
+**No AppImage.** Tauri's AppImage bundler downloads `appimagetool` and a copy of `patchelf` at
+bundle time and rewrites the binary's interpreter path; it is a second packaging format with a
+second set of failure modes, for an audience that `deb` and `rpm` already cover. It can be
+added when there is somebody to add it for.
+
+**No Flatpak, and that one is not a preference.** A Flatpak sandbox does not have `/dev/input`
+or `/dev/uinput`, and both are what the trigger is built on — hold-to-talk on a lone right
+Ctrl exists at all because Dile reads evdev rather than asking the desktop for a shortcut. A
+Flatpak would have to reach the keyboard through the GlobalShortcuts portal instead, where
+there is no release event, which turns hold-to-talk into toggle and makes it a different
+product with the same name. `--device=all` would open the devices and would also be a
+sandbox that grants everything, which is not a thing to ask a person to accept. It is a
+separate piece of work with its own design question, not a target to add to this list.
 
 ### Where things live
 
@@ -756,14 +830,19 @@ Dile asks for the second even though the shipped trigger — the right Ctrl, alo
 nothing: the review card adds Enter, Esc and `Ctrl+C` to the same set while it is on screen,
 and an Enter that transfers the text and *also* lands in the document behind it is exactly the
 bug that set prevents. `handy-keys` checks uinput before it scans, so a machine with only half
-the permission fails on that half.
+the permission fails on that half. The same node is what the experimental auto-paste writes
+to, so a machine where the trigger works is a machine where that works too.
+
+**A package does this for you**; these two commands are for a source build, and they are what
+the package's post-install script runs:
 
 ```bash
 sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-Immediate, and no logging out.
+Immediate, and no logging out — from a package, a session that was already open may need one,
+because the rule hands the devices to whoever is logged in at the seat.
 
 **What it grants, in plain words.** The rule tags those devices `uaccess`, so logind hands
 them to whoever is logged in at the seat as an ACL and takes them back at logout. While you

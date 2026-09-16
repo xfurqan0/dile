@@ -11,8 +11,8 @@ Read it top to bottom the first time. Steps 0 to 5 are reversible; step 6 onward
 ## 0. Preconditions
 
 - `docs/PROJECT.md` §6 says the work packages that get to a first release are done.
-- `main` is clean and CI is green on it: lint, tests and the debug Tauri build on Windows,
-  `cargo deny` on Ubuntu.
+- `main` is clean and CI is green on it — all three jobs: lint, tests and the debug Tauri
+  build on Windows, the same gate on Linux, and `cargo deny` on Ubuntu.
 - You are signed in to GitHub as `xfurqan0`, with two-factor authentication on.
 
 ```powershell
@@ -101,6 +101,65 @@ engine host is most of it and always will be: it is the only binary that links
 
 An installer that is suddenly 30 MB means something got into the bundle. Look at
 `bundle.resources` and `bundle.externalBin` in `crates/dile-app/tauri.conf.json` first.
+
+---
+
+## 2b. The Linux packages, which are a preview and are built by a runner
+
+**Windows is what ships; Linux is a preview** (`docs/PROJECT.md` §9, `README.md`). The `.deb`
+and the `.rpm` are attached to the same draft release, and they are built by the `build-linux`
+job of `release.yml` rather than by a laptop — on `ubuntu-22.04`, because a binary built
+against an older glibc runs on the newer distributions and the reverse is not true.
+
+Nothing on this checklist has to be done by hand for them. What is worth doing is the
+rehearsal, once, before the tag:
+
+```powershell
+gh workflow run Release          # workflow_dispatch: builds everything, creates no release
+gh run watch
+gh run download --name dile-linux --dir dist-linux
+```
+
+A dispatch runs `verify`, `audit`, `build` and `build-linux` and stops: the `draft` job is
+tag-only. So it proves the Linux half of the pipeline without producing anything one-way.
+
+Look at what came out — the package's own metadata, rather than a directory listing:
+
+```bash
+rpm -qpi  dist-linux/Dile-*.rpm    # name, version, licence, summary
+rpm -qpl  dist-linux/Dile-*.rpm    # the file list
+rpm -qpR  dist-linux/Dile-*.rpm    # what it asks the machine for
+rpm -qp --scripts dist-linux/Dile-*.rpm
+
+dpkg-deb -I dist-linux/Dile_*.deb  # the control file, including Depends and Maintainer
+dpkg-deb -c dist-linux/Dile_*.deb  # the file list
+```
+
+Three things to check, because all three are ways a Linux package goes wrong quietly:
+
+1. **`libayatana-appindicator3-1`** in the deb's `Depends`, and
+   `libayatana-appindicator3.so.1()(64bit)` in the rpm's requires — **not** `libappindicator3`
+   without the `ayatana`. That name is written from what pkg-config saw on the build machine,
+   and the 2018 library is gone from Debian 13. `scripts/build-installer.sh` refuses to build
+   a release without the development files, so a package from the runner is right by
+   construction; this is the check that the refusal is still working.
+2. **`libasound`** is there. Without it the application installs and then finds no microphone
+   on a machine that has one.
+3. **`/usr/lib/udev/rules.d/70-dile-input.rules`** is in the file list and the post-install
+   scriptlet reloads udev. Without the rule the trigger does nothing at all, and the
+   application says so in a window rather than failing silently — but a package that installs
+   a dictation tool whose key does not work is not a package that shipped.
+
+To build them on a Linux machine instead — which is what a maintainer does while working on
+the port, not what a release is made of:
+
+```bash
+sudo dnf install libayatana-appindicator-gtk3-devel   # or libayatana-appindicator3-dev
+scripts/build-installer.sh
+```
+
+There is no winget equivalent for them and no submission to any distribution in v1: a preview
+that is honest about being one does not ask a distribution's maintainers for their time.
 
 ---
 
@@ -299,7 +358,9 @@ git add packaging/winget && git commit -m "winget: hash for 0.1.0" && git push
 
 ## 7. Publish the release
 
-Read the draft on github.com first — the notes, the two assets, the file names. Then:
+Read the draft on github.com first — the notes, the assets, the file names. There are four
+of them plus one `SHA256SUMS`: the Windows installer, the `.deb`, the `.rpm`, and the sums
+file that carries the lines both build machines wrote about their own bytes. Then:
 
 ```powershell
 gh release edit v0.1.0 --draft=false
