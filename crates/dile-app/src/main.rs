@@ -92,6 +92,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             settings::commands::get_strings,
             settings::commands::get_settings,
+            settings::commands::get_platform,
             settings::commands::set_settings,
             settings::commands::list_input_devices,
             settings::commands::engine_status,

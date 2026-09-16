@@ -1,6 +1,6 @@
 //! What the settings window is allowed to ask for, and nothing else.
 //!
-//! Nine commands, and the list is the whole of the window's power. `capabilities/settings.json`
+//! Ten commands, and the list is the whole of the window's power. `capabilities/settings.json`
 //! grants it no plugin permission at all — no dialog, no shell, no filesystem, no autostart —
 //! because everything it needs is one of these, and a command is a function this application
 //! wrote rather than a capability somebody else's crate defines. A webview that could open a
@@ -107,6 +107,25 @@ pub struct ModelRow {
     pub present: bool,
 }
 
+/// What this platform does with a finished dictation.
+///
+/// The settings window has one control that exists on one platform, and this is how it finds
+/// out. Not a setting and not in the settings file: it is a property of the build, and a
+/// window that decided it for itself by sniffing a user agent would be a second place where
+/// `platform::DELIVERY` is written down.
+#[derive(Clone, Debug, Serialize)]
+pub struct PlatformPayload {
+    /// `paste` where a dictation goes into the window it was aimed at, `clipboard` where it is
+    /// handed over and the person pastes it.
+    pub delivery: &'static str,
+    /// Whether the experimental auto-paste switch means anything here.
+    ///
+    /// False on Windows, where a dictation is already pasted into the window it was aimed at.
+    /// The settings window hides the control rather than showing a switch that does nothing —
+    /// a control that is present and inert is worse than one that is absent.
+    pub auto_paste: bool,
+}
+
 /// The strings the window renders itself with.
 #[tauri::command]
 pub fn get_strings(ui: State<'_, Ui>) -> StringsPayload {
@@ -121,6 +140,19 @@ pub fn get_strings(ui: State<'_, Ui>) -> StringsPayload {
 #[tauri::command]
 pub fn get_settings(store: State<'_, SettingsStore>) -> Settings {
     store.get()
+}
+
+/// What this build does with a finished dictation, for the controls that only exist on one
+/// platform.
+#[tauri::command]
+pub fn get_platform() -> PlatformPayload {
+    PlatformPayload {
+        delivery: match crate::platform::DELIVERY {
+            crate::platform::Delivery::Paste => "paste",
+            crate::platform::Delivery::Clipboard => "clipboard",
+        },
+        auto_paste: crate::platform::AUTO_PASTE_OFFERED,
+    }
 }
 
 /// Replace the settings.
@@ -399,6 +431,23 @@ mod tests {
         // A modifier family with no side is neither shape, and is named rather than guessed.
         let refused = check_trigger("Ctrl").expect_err("a family is not a key");
         assert_eq!(refused.key, "settings.error.chord.unreadable");
+    }
+
+    #[test]
+    fn the_settings_window_is_only_offered_a_switch_this_build_can_honour() {
+        // The one control in this window that is not on every platform. The payload is what
+        // decides whether it is drawn, so it has to agree with the constant the panel reads
+        // when it decides whether to send a chord — two answers to one question is how a
+        // switch ends up doing nothing.
+        let platform = super::get_platform();
+        assert_eq!(platform.auto_paste, crate::platform::AUTO_PASTE_OFFERED);
+        assert_eq!(
+            platform.delivery,
+            if cfg!(windows) { "paste" } else { "clipboard" }
+        );
+        if platform.auto_paste {
+            assert_eq!(platform.delivery, "clipboard");
+        }
     }
 
     #[test]

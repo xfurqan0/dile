@@ -98,6 +98,23 @@
             </div>
             <p class="hint" data-i18n="settings.cleanup.autotransfer.hint"></p>
           </div>
+
+          <!--
+            The one group in this window that is not on every platform, and it is hidden
+            rather than disabled where it does not apply: on Windows a dictation is pasted
+            into the window it was aimed at, so a switch offering an unaimed Ctrl+V would be
+            a worse option presented as an extra. `get_platform` is what decides, because the
+            answer is a property of the build rather than of a user agent string.
+          -->
+          <div class="group" id="autopaste-group" hidden>
+            <div class="field">
+              <span class="label" id="autopaste-label" data-i18n="settings.cleanup.autopaste"></span>
+              <span class="control">
+                <button type="button" class="switch" id="autopaste" role="switch" aria-labelledby="autopaste-label"></button>
+              </span>
+            </div>
+            <p class="hint" data-i18n="settings.cleanup.autopaste.hint"></p>
+          </div>
         </section>
 
         <section class="section" data-section="engine" hidden>

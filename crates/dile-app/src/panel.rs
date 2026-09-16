@@ -64,7 +64,7 @@ use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WindowEvent};
 
 use crate::paste::{Outcome, Paster};
-use crate::platform::{self, Delivery, Hwnd, Monitor, window};
+use crate::platform::{self, AUTO_PASTE_FAILED, AutoPaste, Delivery, Hwnd, Monitor, window};
 use crate::settings::{PanelPosition, SettingsStore};
 use crate::ui::Ui;
 
@@ -111,6 +111,35 @@ const MAX_HEIGHT: f64 = CARD_MAX + GUTTER * 2.0;
 
 /// How far below the top of the work area the **card's own top edge** sits, in logical pixels.
 const TOP_MARGIN: f64 = 24.0;
+
+/// How long the compositor is given to hand the keyboard back after the card is hidden,
+/// before an auto-paste chord is sent.
+///
+/// **The one number in the auto-paste path that is a guess rather than a measurement**, and
+/// it cannot be anything else: there is no event a Wayland client can wait for that says
+/// *somebody else has the focus now*. A client is told when it gains and loses the keyboard
+/// and nothing about who has it instead, which is the same rule that makes the target window
+/// unnameable in the first place (`docs/PROJECT.md` §9).
+///
+/// Measured on GNOME 50.4: the card's `wl_keyboard.leave` and the next surface's `enter`
+/// arrive in the same frame, well inside this. Generous rather than tight because the cost of
+/// being early is a chord typed into a card that is on its way out, and the cost of being
+/// late is that a person sees the paste a tenth of a second after the card goes.
+const FOCUS_RETURN: std::time::Duration = std::time::Duration::from_millis(180);
+
+/// What the experimental auto-paste did, which is three different things to the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chord {
+    /// The setting is off, or this platform has no way to send one. The card says *copied*.
+    NotAsked,
+    /// The card has been taken down and the chord was written — or was not, in which case the
+    /// log says so. There is nothing left on screen to put a line on either way, and the
+    /// dictation is on the clipboard in both.
+    Handled,
+    /// It was asked for and there is no keyboard to send it with. The card stays up, and this
+    /// is the locale key of the line it shows instead of *copied*.
+    Unavailable(&'static str),
+}
 
 /// What the panel is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -193,6 +222,15 @@ pub struct Panel {
     /// previous package could do. The transfer says so in the log and the copy button reports
     /// it the same way.
     paster: Option<Paster>,
+    /// The virtual keyboard the experimental auto-paste presses `Ctrl+V` on, once something
+    /// has asked for one.
+    ///
+    /// **Opened lazily and then kept**, which is two decisions. Lazily, because a machine
+    /// where the setting is off must not have an extra keyboard in its device list for no
+    /// reason; kept, because creating one costs a settle window the compositor needs before
+    /// it will read from the device at all (`platform::uinput`), and paying that on every
+    /// dictation would make the first chord of each one the slow one.
+    keyboard: Mutex<Option<AutoPaste>>,
     held: Mutex<Held>,
 }
 
@@ -223,6 +261,7 @@ impl Panel {
             ui,
             remote: Mutex::new(None),
             paster,
+            keyboard: Mutex::new(None),
             held: Mutex::new(Held::default()),
         });
 
@@ -268,6 +307,7 @@ impl Panel {
                     &self.ui.strings(),
                     &self.store.get().hotkey.trigger,
                 ),
+                note: None,
             },
         );
     }
@@ -309,6 +349,7 @@ impl Panel {
             PanelPayload {
                 mode: "live",
                 hotkey: String::new(),
+                note: None,
             },
         );
     }
@@ -356,6 +397,7 @@ impl Panel {
             PanelPayload {
                 mode: "closed",
                 hotkey: String::new(),
+                note: None,
             },
         );
         self.hide();
@@ -406,7 +448,7 @@ impl Panel {
         // on the clipboard and the card says so, rather than being pasted into whatever
         // happened to be in front. `platform::DELIVERY` is where that was decided and why.
         if platform::DELIVERY == Delivery::Clipboard {
-            self.hand_over(&body);
+            self.hand_over(&body, self.wants_auto_paste());
             return;
         }
 
@@ -468,7 +510,13 @@ impl Panel {
             // Copy and transfer are one action on a platform that hands over on the
             // clipboard, and the card says the same thing after either of them. Closing is
             // left to the card, which waits long enough for the sentence to be read.
-            self.hand_over(&body);
+            //
+            // **With one difference, and it is the whole of what the two words mean.** Copy
+            // is *put this on my clipboard*; transfer is *put this where I am typing*. So the
+            // experimental chord belongs to the second and never to the first: a person who
+            // pressed Copy asked for the text to be somewhere they can take it from, not for
+            // it to be pasted into whatever is in front of them.
+            self.hand_over(&body, false);
             return;
         }
 
@@ -491,8 +539,12 @@ impl Panel {
     /// hand or presses Esc. A card that vanished on a clipboard that refused would lose the
     /// dictation, which is the one outcome this application never accepts.
     ///
+    /// `auto_paste` is the experimental setting, and the exception to the paragraph above: a
+    /// chord that was actually sent takes the card down first, because the card is what holds
+    /// the keyboard. [`Panel::press_paste`] is that sequence.
+    ///
     /// **Blocks**, like everything else that touches a clipboard: see [`Panel::transfer`].
-    fn hand_over(&self, body: &str) {
+    fn hand_over(&self, body: &str, auto_paste: bool) {
         let Some(paster) = self.paster.as_ref() else {
             log::error!(
                 "there is no clipboard on this platform, so the dictation stays in the panel"
@@ -506,13 +558,17 @@ impl Panel {
                 log::info!(
                     "the dictation is on the clipboard; Ctrl+V puts it wherever the caret is"
                 );
-                self.ui.emit(
-                    EVENT_PANEL,
-                    PanelPayload {
-                        mode: "copied",
-                        hotkey: String::new(),
-                    },
-                );
+                // The clipboard first and the chord second, always. If the chord never goes
+                // out — the setting is off, or there is no way to send one — the text is
+                // already somewhere the person can take it from, which is the promise this
+                // platform actually makes.
+                match self.press_paste(auto_paste) {
+                    // The card is already gone: it had to be, or the chord would have landed
+                    // in it. Nothing left to emit.
+                    Chord::Handled => return,
+                    Chord::NotAsked => self.report_copied(None),
+                    Chord::Unavailable(note) => self.report_copied(Some(note)),
+                }
             }
             Err(error) => {
                 log::error!("the dictation could not be put on the clipboard: {error}");
@@ -525,6 +581,87 @@ impl Panel {
         // take — and on a platform where this flag means something, a card that stayed
         // activatable would keep the caret it had borrowed.
         self.set_focusable(false);
+    }
+
+    /// Whether this dictation should end with a `Ctrl+V` this application pressed itself.
+    fn wants_auto_paste(&self) -> bool {
+        auto_paste_wanted(&self.store.get())
+    }
+
+    /// Send `Ctrl+V` at whatever holds the keyboard, with the card taken out of the way first.
+    ///
+    /// **The order is the whole of this function, and it is not the obvious one.**
+    ///
+    /// 1. The virtual keyboard is opened *before* anything moves, because opening one is what
+    ///    fails, and a failure has to leave the card up with a line on it. A card cannot be
+    ///    put back once it is down.
+    /// 2. The card is hidden. It holds the keyboard while it is on screen — that is what let
+    ///    the clipboard be written at all (`platform::linux`) — so a chord sent now would be
+    ///    typed into the card.
+    /// 3. [`FOCUS_RETURN`] passes, which is the compositor handing the keyboard back to
+    ///    whatever had it. Nothing tells a client when that has happened.
+    /// 4. The chord goes out, at whatever holds the keyboard **now**. Not at a window this
+    ///    application chose, because it cannot choose one.
+    ///
+    /// A chord that could not be written after step 2 is a line in the log and nothing on
+    /// screen: the card is down by then. The dictation is on the clipboard in every one of
+    /// these cases, which is why none of them loses anything.
+    ///
+    /// **Blocks** for the settle window on the first call and for [`FOCUS_RETURN`] on every
+    /// one. Both callers are already off the main thread.
+    fn press_paste(&self, asked: bool) -> Chord {
+        if !asked {
+            return Chord::NotAsked;
+        }
+
+        let Ok(mut keyboard) = self.keyboard.lock() else {
+            log::error!(
+                "auto-paste: the virtual keyboard cannot be reached, because a thread panicked holding it"
+            );
+            return Chord::Unavailable(AUTO_PASTE_FAILED);
+        };
+
+        if keyboard.is_none() {
+            match AutoPaste::open() {
+                Ok(opened) => *keyboard = Some(opened),
+                Err(error) => {
+                    log::warn!(
+                        "auto-paste is on and there is no virtual keyboard to send a chord with: {error}"
+                    );
+                    return Chord::Unavailable(error.key());
+                }
+            }
+        }
+        let Some(opened) = keyboard.as_ref() else {
+            // Unreachable: the block above either filled it or returned.
+            return Chord::Unavailable(AUTO_PASTE_FAILED);
+        };
+
+        self.set_focusable(false);
+        self.close();
+        std::thread::sleep(FOCUS_RETURN);
+
+        match opened.press_paste() {
+            Ok(()) => log::info!(
+                "auto-paste: Ctrl+V was sent to whatever holds the keyboard, which this application is not told"
+            ),
+            Err(error) => log::error!(
+                "auto-paste: the chord could not be sent: {error}. The dictation is on the clipboard"
+            ),
+        }
+        Chord::Handled
+    }
+
+    /// The card's one line after a hand-over: *copied*, or why the chord did not happen.
+    fn report_copied(&self, note: Option<&'static str>) {
+        self.ui.emit(
+            EVENT_PANEL,
+            PanelPayload {
+                mode: "copied",
+                hotkey: String::new(),
+                note,
+            },
+        );
     }
 
     /// Close the panel and paste nothing at all.
@@ -805,6 +942,7 @@ impl Panel {
             PanelPayload {
                 mode: "target-gone",
                 hotkey: String::new(),
+                note: None,
             },
         );
     }
@@ -820,6 +958,7 @@ impl Panel {
             PanelPayload {
                 mode: "clipboard-failed",
                 hotkey: String::new(),
+                note: None,
             },
         );
     }
@@ -827,6 +966,20 @@ impl Panel {
     fn window(&self) -> Option<tauri::WebviewWindow> {
         self.app.get_webview_window(WINDOW)
     }
+}
+
+/// Whether a finished dictation should end with a `Ctrl+V` this application pressed itself.
+///
+/// **Two conditions, and the platform one comes first.** A build that cannot synthesise a key
+/// press must not act on a setting about one: a `settings.json` carried from a Linux machine
+/// to a Windows one would otherwise turn on a feature that does not exist there, and the
+/// switch that wrote it is not even drawn in that window.
+///
+/// A free function of one document rather than a method, so that the rule is tested on a
+/// machine with no application, no window and no keyboard — which is every machine that runs
+/// this suite.
+fn auto_paste_wanted(settings: &crate::settings::Settings) -> bool {
+    platform::AUTO_PASTE_OFFERED && settings.paste.auto
 }
 
 /// Say whether the card can actually refuse the focus, read off the real window.
@@ -933,10 +1086,21 @@ pub struct ResultPayload {
 /// The payload of [`EVENT_PANEL`].
 #[derive(Clone, Debug, Serialize)]
 pub struct PanelPayload {
-    /// `live`, `idle`, `closed` or `target-gone`.
+    /// `live`, `idle`, `closed`, `copied`, `clipboard-failed` or `target-gone`.
     pub mode: &'static str,
     /// The chord the idle hint names. Empty for every other mode.
     pub hotkey: String,
+    /// A locale key to show **instead of** the mode's own line, where there is something more
+    /// specific to say.
+    ///
+    /// One user today: the card says *copied — press `Ctrl+V`* after a hand-over, and says
+    /// why auto-paste did not happen when somebody had turned it on. Both are the same one
+    /// line in the same corner, because the result layout must not move under a person who is
+    /// reading it.
+    ///
+    /// A key rather than a sentence, for the rule every visible word in this product follows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
 }
 
 /// The settings the panel draws itself with.
@@ -1143,10 +1307,10 @@ pub mod commands {
 mod tests {
     use super::{
         BASE_HEIGHT, CARD_BASE, CARD_MAX, GUTTER, MAX_HEIGHT, PanelPayload, ResultPayload, WIDTH,
-        clamp_into, top_centre,
+        auto_paste_wanted, clamp_into, top_centre,
     };
     use crate::platform::screen::{Monitor, Rect};
-    use crate::settings::PanelPosition;
+    use crate::settings::{PanelPosition, Settings};
 
     fn monitor(left: i32, top: i32) -> Monitor {
         Monitor {
@@ -1246,8 +1410,41 @@ mod tests {
         let panel = serde_json::to_value(PanelPayload {
             mode: "closed",
             hotkey: String::new(),
+            note: None,
         })
         .expect("a panel payload serializes");
         assert_eq!(panel["mode"], "closed");
+
+        // A payload with nothing extra to say carries **no** note at all rather than a null,
+        // because the page's fallback is `payload.note || "panel.state.copied"` and a null
+        // and a missing key have to mean the same thing there.
+        assert!(panel.get("note").is_none(), "{panel}");
+
+        let noted = serde_json::to_value(PanelPayload {
+            mode: "copied",
+            hotkey: String::new(),
+            note: Some("panel.state.autopaste.nopermission"),
+        })
+        .expect("a panel payload serializes");
+        assert_eq!(noted["note"], "panel.state.autopaste.nopermission");
+    }
+
+    #[test]
+    fn the_setting_alone_does_not_send_a_chord_on_a_build_that_has_none() {
+        // A settings file is carried between machines, and this is the rule that makes that
+        // safe: the switch is drawn on one platform and read on the same one. On Windows a
+        // dictation is pasted into the window it was aimed at, and a stray `true` in a file
+        // must not add an unaimed key press to that.
+        let mut settings = Settings::default();
+        assert!(!auto_paste_wanted(&settings), "the shipped default is off");
+
+        settings.paste.auto = true;
+        assert_eq!(
+            auto_paste_wanted(&settings),
+            crate::platform::AUTO_PASTE_OFFERED
+        );
+        if cfg!(windows) {
+            assert!(!auto_paste_wanted(&settings));
+        }
     }
 }

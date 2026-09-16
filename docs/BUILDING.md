@@ -559,7 +559,7 @@ Concretely:
 | The clipboard | works, and it is how a dictation is handed over here: the card says *copied — press Ctrl+V to paste* |
 | Placing the card on a screen | **no** — `xdg-shell` has no global coordinate space |
 | Naming the target application | **no** — a Wayland client is not told what has the focus |
-| Automatic paste | **no** — the text is on the clipboard and the person presses `Ctrl+V` |
+| Automatic paste | **off by default, and experimental where it is on** — see below |
 
 The application says each of those in the log at start-up rather than failing quietly.
 `docs/PROJECT.md` §9 is why the hand-over is shaped that way rather than as a paste.
@@ -796,6 +796,41 @@ is the same physical key whichever one is selected.
 
 Inside the application the same failure is a dialog rather than a log line, because a tray
 application that exits before it has a tray has no other way to say anything.
+
+### The experimental auto-paste
+
+`Settings > Cleanup and transfer > Experimental: press Ctrl+V for me`, which is `paste.auto`
+in `settings.json` and is **off** unless somebody turns it on. With it on, a finished
+dictation goes on the clipboard exactly as before and then Dile presses `Ctrl+V` itself,
+through a `uinput` keyboard it creates called `Dile virtual keyboard`.
+
+**It is not a paste, and the difference matters before you turn it on.** The chord reaches
+whatever holds the keyboard at that moment — Dile is not told which window that is, here or
+anywhere else under Wayland — so it is *press the chord and see* rather than *put this
+sentence in that window*. Two consequences worth knowing:
+
+* **In a terminal, `Ctrl+V` is not paste.** Most terminal emulators paste on `Ctrl+Shift+V`
+  and treat `Ctrl+V` as something else or as nothing. On Windows Dile picks the chord per
+  application; picking it needs to know what the target is, and that is the one thing it
+  cannot know here. The text is on the clipboard either way, so the fix is to paste it
+  yourself.
+* **The card goes away before the chord.** It has to: the card holds the keyboard while it is
+  on screen, so a chord sent first would be typed into the card. So with this on you get the
+  text and not the *copied* line.
+
+It needs no permission the trigger did not already need — `/dev/uinput`, from the same udev
+rule — and a machine without it says which of the two reasons it was, on the card, in one
+line, with the dictation still on the clipboard:
+
+| The card says | What it means |
+|---|---|
+| *No auto-paste here* | there is no `/dev/uinput`; the `uinput` kernel module is not loaded |
+| *Auto-paste needs the udev rule* | the node is there and this user may not write to it |
+| *Auto-paste did not work* | anything else, and the log line beside it says what |
+
+The device exists only while Dile is running: the kernel destroys a `uinput` device when the
+last handle on it closes, so quitting or crashing takes it with it. `libinput list-devices`
+is where to look for it, and it has two keys on it — `Ctrl` and `V`.
 
 ### The tray on GNOME
 

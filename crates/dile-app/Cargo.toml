@@ -86,6 +86,20 @@ tauri-plugin-autostart = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 
+# D-WP-L4: the experimental auto-paste, which is a uinput keyboard with two keys on it.
+#
+# **No new crate either.** `evdev` is already compiled into every Linux build through
+# `handy-keys`, which is how the trigger reads `/dev/input/event*`; naming it here links the
+# copy that is already there, and `Cargo.lock` gains a line in this crate's dependency list
+# and no package. It is the same permission twice as well: the rule that lets the trigger see
+# a key press is the rule that lets this send one — `packaging/linux/70-dile-input.rules` —
+# so the setting costs a person nothing they have not already been asked for.
+#
+# The alternative was `ydotool`: a daemon the user installs and runs, GPL-licensed, doing
+# exactly this over a socket. `src/platform/uinput.rs` is the same thing without a second
+# process, a second permission model or a second thing to explain.
+evdev = "0.13.2"
+
 # WP5b: the paste. Four things have no safe wrapper anywhere in the Tauri stack — the
 # clipboard with a *delayed render* receipt, the foreground window and the program behind it,
 # the monitor that window is on, and a synthetic key chord — and all four are in `src/win32/`,

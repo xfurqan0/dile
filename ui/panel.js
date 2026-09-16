@@ -479,12 +479,17 @@ function onPanel(payload) {
     // result layout does not move at all — the corner that would have said where the text was
     // going says where it is instead, and the text stays selectable underneath it while the
     // card is up, so a failure a moment later still leaves something to take by hand.
+    //
+    // `note` is the same corner saying something more specific: the experimental auto-paste
+    // was asked for and there was no way to send the chord. It replaces the line rather than
+    // adding one, because a card that grew a second line under a person reading it would
+    // move the text they were reading.
     stopCountdown();
     clearTimeout(closeTimer);
     mode = "copied";
     target.hidden = false;
-    target.dataset.state = "copied";
-    target.textContent = t("panel.state.copied");
+    target.dataset.state = payload.note ? "failed" : "copied";
+    target.textContent = t(payload.note || "panel.state.copied");
     closeLater(COPIED_MS);
   } else if (payload.mode === "clipboard-failed") {
     // The one outcome that must never take the dictation with it: the countdown stops, the

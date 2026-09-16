@@ -237,7 +237,10 @@ inside the application.
   sentence in the right place, and it will not paste into the wrong one instead. Three more
   things follow from the same rule, and are worth knowing before you try it: **the card lands
   where the compositor puts it** rather than top-centre, **it takes the keyboard** while it is
-  up, and **the target application is not named** on it. The tray icon needs the AppIndicator
+  up, and **the target application is not named** on it. There is an experimental setting that
+  presses `Ctrl+V` for you — off unless you turn it on, and honest about what it is: the chord
+  goes to whatever holds the keyboard at that moment rather than to a window Dile chose, and
+  in a terminal `Ctrl+V` is not paste. The tray icon needs the AppIndicator
   extension on GNOME, and the trigger needs one udev rule; the application says so itself if
   either is missing. `docs/PROJECT.md` §9 is the whole of the reasoning and
   `docs/BUILDING.md`, "Building on Linux", is how to build it. macOS comes from the same

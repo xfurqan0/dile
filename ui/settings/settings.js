@@ -33,6 +33,8 @@ const ENGINE_POLL = 2000;
 
 let strings = {};
 let settings = null;
+/** What this build does with a finished dictation; `get_platform` answers it once. */
+let platform = { delivery: "paste", auto_paste: false };
 let devices = [];
 let section = "hotkey";
 let saveTimer = null;
@@ -207,6 +209,7 @@ function draw() {
   drawSegmented("strictness", settings.cleanup.strictness);
   drawSwitch("auto-transfer", settings.cleanup.auto_transfer);
   $("#auto-transfer-ms").value = String(settings.cleanup.auto_transfer_ms);
+  drawSwitch("autopaste", settings.paste.auto);
   $("#tier").value = settings.engine.tier_override || "auto";
   drawSegmented("language", settings.ui.language);
   drawSwitch("autostart", settings.ui.autostart);
@@ -375,6 +378,12 @@ function wire() {
     schedule();
   });
 
+  $("#autopaste").addEventListener("click", () => {
+    settings.paste.auto = !settings.paste.auto;
+    drawSwitch("autopaste", settings.paste.auto);
+    schedule();
+  });
+
   $("#auto-transfer-ms").addEventListener("input", () => {
     const typed = Number($("#auto-transfer-ms").value);
     if (Number.isFinite(typed) && typed > 0) {
@@ -510,6 +519,10 @@ async function boot() {
     applyStrings();
 
     settings = await invoke("get_settings");
+    // Before `draw`, because it decides whether one of the controls draw touches is on the
+    // page at all.
+    platform = await invoke("get_platform");
+    $("#autopaste-group").hidden = !platform.auto_paste;
     try {
       devices = await invoke("list_input_devices");
     } catch (error) {

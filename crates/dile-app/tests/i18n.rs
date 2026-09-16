@@ -346,6 +346,12 @@ fn the_rust_side_hard_codes_no_text_a_user_could_read() {
         "VS Code",
         "Windows Terminal",
         "Visual Studio",
+        // The name of the uinput keyboard D-WP-L4 creates (`platform/uinput.rs`). It is a
+        // **device name in a kernel device list**, which is an identifier rather than a
+        // sentence: it is what `libinput list-devices` prints, what a person tracing an
+        // unexplained input device would search for, and translating it would mean a Turkish
+        // desktop and an English one disagreeing about what the same device is called.
+        "Dile virtual keyboard",
         // The sample sentence `DILE_OPEN_PANEL=result` renders (`panel.rs`). It is inside
         // `#[cfg(debug_assertions)]`, so no release build contains it, and it is a stand-in
         // for an engine's output rather than a string this application says: its whole job

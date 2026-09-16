@@ -315,6 +315,27 @@ impl Default for CleanupSettings {
     }
 }
 
+/// What happens after a dictation has been put on the clipboard.
+///
+/// **One switch, and it only means anything where the hand-over is a clipboard one.** On
+/// Windows a dictation is pasted into the window it was aimed at, so there is nothing here to
+/// turn on; on Linux there is no window to aim at — `docs/PROJECT.md` §9 — and this is the
+/// question of whether Dile should press `Ctrl+V` anyway, at whatever holds the keyboard.
+///
+/// It is read and written on every platform for the reason every other field is: a settings
+/// file written by one build has to load in another.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasteSettings {
+    /// Send `Ctrl+V` after the hand-over instead of leaving the person to press it.
+    ///
+    /// **Off by default, and experimental.** The chord reaches whatever holds the keyboard at
+    /// the moment it is sent, because a Wayland client is not told which window that is — so
+    /// it is a convenience that cannot be a promise, and an unaimed key press is not something
+    /// to turn on for somebody.
+    pub auto: bool,
+}
+
 /// What the user said about the engine, as against what the probe found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -382,6 +403,8 @@ pub struct Settings {
     pub capture: CaptureSettings,
     /// The Turkish layer and the transfer.
     pub cleanup: CleanupSettings,
+    /// What happens after the hand-over, where the hand-over is a clipboard one.
+    pub paste: PasteSettings,
     /// The engine tier.
     pub engine: EngineSettings,
     /// The user's own terms, which also become the engine's initial prompt.
@@ -397,6 +420,7 @@ impl Default for Settings {
             hotkey: HotkeySettings::default(),
             capture: CaptureSettings::default(),
             cleanup: CleanupSettings::default(),
+            paste: PasteSettings::default(),
             engine: EngineSettings::default(),
             dictionary: Vec::new(),
             ui: UiSettings::default(),
@@ -620,6 +644,10 @@ mod tests {
         assert!(settings.cleanup.auto_transfer);
         assert_eq!(settings.cleanup.auto_transfer_ms, DEFAULT_AUTO_TRANSFER_MS);
 
+        // Experimental, unaimed, and therefore off. A key press this product cannot say where
+        // it will land is not something to turn on for somebody — docs/PROJECT.md §9.
+        assert!(!settings.paste.auto);
+
         assert_eq!(settings.engine.tier_override, None);
         assert_eq!(settings.ui.language, Language::Auto);
         assert!(!settings.ui.autostart);
@@ -740,6 +768,7 @@ mod tests {
         settings.capture.cap_secs = 120;
         settings.cleanup.strictness = CleanupLevel::Strict;
         settings.engine.tier_override = Some(Device::Cpu);
+        settings.paste.auto = true;
         settings.ui.language = Language::Tr;
         settings.ui.autostart = true;
         settings.dictionary = vec![DictionaryEntry {
@@ -787,6 +816,9 @@ mod tests {
         assert_eq!(settings.hotkey.trigger, DEFAULT_TRIGGER);
         assert_eq!(settings.cleanup.strictness, CleanupLevel::Medium);
         assert!(settings.dictionary.is_empty());
+        // The newest field of all, missing from every file written before it existed. A
+        // missing switch is the shipped default, and the shipped default is off.
+        assert!(!settings.paste.auto);
 
         // And a file that is not JSON at all is the defaults rather than a failure to start.
         std::fs::write(&path, "{ this is not json").expect("damage the file");

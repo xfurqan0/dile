@@ -390,6 +390,45 @@ A third measurement is a promise to the user rather than a mechanism: **the sele
 to the connection, not to the window**, so hiding the card does not take the text back — but
 it does not survive *Quit*, on a desktop with no clipboard manager running.
 
+### The experimental auto-paste, and why it is a setting rather than the behaviour
+
+D-WP-L4, 2026-09-16. **`Ctrl+V` can be pressed for you, and Dile will do it if you ask.**
+`paste.auto` in `settings.json`, a switch in the settings window labelled *Experimental:
+press Ctrl+V for me*, **off by default**, and the settings window does not draw it at all on
+Windows — where a dictation is pasted into the window it was aimed at, an unaimed chord is
+not an extra, it is a worse version of what is already there.
+
+**Nothing above this heading changed.** The hand-over is still the clipboard, the card still
+says *copied — press Ctrl+V to paste* when the switch is off, and `platform::DELIVERY` is
+still `Delivery::Clipboard`. What the switch adds is a key press at **whatever holds the
+keyboard at that moment**, which is a different and smaller thing than a paste:
+
+* It is not aimed and cannot be. The limit at the top of this section is unchanged — a
+  Wayland client is not told which window has the focus — so this is *press the chord and see*
+  rather than *put this sentence in that window*. `platform::window::send_paste_chord`, which
+  is the aimed one, still answers `false` on Linux and has a test that keeps it that way.
+* **In a terminal it is not paste.** `Ctrl+V` in most terminal emulators is a literal-next or
+  nothing at all, and the chord that pastes there is `Ctrl+Shift+V` — which Dile picks per
+  application on Windows and cannot pick here, because picking it means knowing what the
+  target is. A person who dictates into a terminal with this on gets a chord that does
+  nothing, and the text is still on the clipboard for them to paste properly.
+* It costs no new permission. `/dev/uinput` is what lets a key be *swallowed*, and the
+  trigger has asked for it since D-WP-L1; the same rule that makes hold-to-talk work is the
+  one that makes this work. A machine without it gets one line on the card saying which of
+  the two reasons it was, and the dictation on the clipboard as usual.
+
+**The order is the whole implementation**, and it is in `panel.rs`'s `hand_over`: the virtual
+keyboard is opened first, because opening is what fails and a failure has to leave the card up
+with a line on it; then the card is hidden, because the card holds the keyboard and a chord
+sent while it is up would be typed into the card; then a fifth of a second passes, which is
+the compositor handing the keyboard back to whatever had it and the one number here that is a
+guess rather than a measurement — there is no event that says *somebody else has the focus
+now*, for the same reason there is no way to name the target; then the chord goes out.
+
+And it belongs to **transfer** rather than to copy. Copy means *put this where I can take it*;
+transfer means *put this where I am typing*. A person who pressed Copy did not ask to have it
+pasted anywhere.
+
 ### The window flags Wayland has no answer for
 
 `tauri.linux.conf.json` restates the panel window without `alwaysOnTop`, `focusable`,
