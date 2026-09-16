@@ -305,11 +305,15 @@ Every one of these was measured on GNOME 50 under Wayland rather than read:
   picking that per application means knowing what the application is, which is limit 1. The
   text is on the clipboard either way.
 
-**The Linux packages carry the CPU engine**, which is slower than real time and is a fallback
-rather than a mode to choose. Linux never probes the GPU tier and never selects it for you:
-whisper.cpp has an open, unfixed fault on Intel integrated graphics under Mesa, and choosing a
-tier that crashes on somebody's machine is worse than being slow on it. `Settings > Engine >
-Tier` goes straight to Vulkan on an engine host built from source with that feature on.
+**The Linux packages carry the GPU engine, and the first start probes it**, exactly as on
+Windows: a two-second Turkish clip is transcribed in the isolated engine process, and only a
+device that answers with the sentence is used. Until 2026-09-17 they carried the CPU engine
+and probed nothing, because whisper.cpp has an open, unfixed fault on Intel integrated
+graphics under Mesa. That report was then measured rather than repeated — on Intel Iris Xe
+under Mesa 26.1.8 the GPU tier ran thirty transcriptions without it, **four times faster than
+the CPU tier and steady to twenty milliseconds where the CPU tier moved by a factor of
+three** — and a per-machine probe is the honest way to offer that. A machine whose driver
+does fail the probe drops to the CPU tier, once, and the answer is remembered.
 
 ## Roadmap
 

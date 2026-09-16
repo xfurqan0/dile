@@ -22,14 +22,18 @@
     "targets": ["deb", "rpm"],
     "linux": {
       "deb": {
-        "depends": ["libasound2t64 | libasound2", "libstdc++6"],
+        "depends": ["libasound2t64 | libasound2", "libstdc++6", "libvulkan1"],
         "files": {
           "/usr/lib/udev/rules.d/70-dile-input.rules": "../../packaging/linux/70-dile-input.rules"
         },
         "postInstallScript": "../../packaging/linux/post-install.sh"
       },
       "rpm": {
-        "depends": ["libasound.so.2()(64bit)", "libstdc++.so.6()(64bit)"],
+        "depends": [
+          "libasound.so.2()(64bit)",
+          "libstdc++.so.6()(64bit)",
+          "libvulkan.so.1()(64bit)"
+        ],
         "files": {
           "/usr/lib/udev/rules.d/70-dile-input.rules": "../../packaging/linux/70-dile-input.rules"
         },

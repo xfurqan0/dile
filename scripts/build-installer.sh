@@ -22,6 +22,7 @@
 #   scripts/build-installer.sh                  # what a release is built with
 #   scripts/build-installer.sh --skip-sidecars  # a second run that only changed the app
 #   scripts/build-installer.sh --legacy-tray    # a machine with no ayatana development files
+#   scripts/build-installer.sh --cpu-engine     # a package whose engine cannot run the GPU tier
 #
 # **`--skip-sidecars` means what it says, and it has one sharp edge.** It assumes
 # `crates/dile-app/binaries/` holds *release* sidecars — and the CI gate, `build-host.sh --cpu
@@ -34,6 +35,7 @@ set -uo pipefail
 
 skip_sidecars=0
 legacy_tray=0
+cpu_engine=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -43,6 +45,10 @@ while [ $# -gt 0 ]; do
             ;;
         --legacy-tray)
             legacy_tray=1
+            shift
+            ;;
+        --cpu-engine)
+            cpu_engine=1
             shift
             ;;
         --help | -h)
@@ -163,11 +169,31 @@ dim "remapped    3 rustc path prefixes, and __FILE__ for the C and C++"
 if [ "${skip_sidecars}" -eq 1 ]; then
     dim "sidecars    skipped, crates/dile-app/binaries is assumed current"
 else
-    # `--cpu`, and on purpose: Linux does not probe the GPU tier and never chooses it for
-    # anybody (docs/PROJECT.md §9, docs/BUILDING.md), so a Vulkan host in the package would be
-    # a Vulkan toolchain in every release build for a tier nothing selects on its own. A person
-    # who wants that tier builds the host themselves; docs/BUILDING.md says how.
-    if ! "${script_directory}/build-host.sh" --cpu; then
+    # **The GPU build, and on purpose.** Until 2026-09-17 this said `--cpu`, because Linux
+    # did not probe the GPU tier and never chose it for anybody, and a Vulkan host would then
+    # have been a Vulkan toolchain in every release build for a tier nothing selected. Both
+    # halves of that changed together: measured on this port's own hardware -- Intel Iris Xe
+    # (RPL-P) on Mesa 26.1.8 -- the Vulkan tier transcribes the committed probe clip in
+    # **2.5 s against the CPU tier's 8 to 26**, with the spread between runs falling from
+    # seconds to tens of milliseconds, and it did it 30 times without the `DeviceLost` the
+    # tier was held back over. A package with a CPU-only engine cannot offer that whatever
+    # the probe finds, so the engine here is the one that can, and the probe is what decides
+    # per machine (docs/PROJECT.md §3, engine tiers).
+    #
+    # It costs: the engine host goes from 3.7 MB to about 42 MB, nearly all of it compiled
+    # shaders, and the finished binary carries a hard `libvulkan.so.1` -- which is why
+    # `tauri.linux.conf.json` names the loader in `depends`, so a machine without one refuses
+    # the package instead of installing an engine that cannot start.
+    #
+    # `--cpu-engine` builds the old shape: a smaller package for a machine or a distribution
+    # that does not want the loader as a dependency. Every such machine still works, because
+    # a host built without the feature answers `hello` without it and the probe records
+    # exactly that rather than a driver that failed.
+    engine_switches=()
+    if [ "${cpu_engine}" -eq 1 ]; then
+        engine_switches=(--cpu)
+    fi
+    if ! "${script_directory}/build-host.sh" "${engine_switches[@]+"${engine_switches[@]}"}"; then
         red "the sidecars did not build, so there is nothing to bundle."
         exit 1
     fi

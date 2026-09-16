@@ -25,14 +25,16 @@
 # is `-DebugBuild`. Both PowerShell spellings are accepted too, so a reader following
 # docs/BUILDING.md's Windows column on a Linux machine is not stopped by a dash.
 #
-#   --cpu     Build the engine host without `gpu-vulkan`. No Vulkan headers and no glslc
-#             needed, several minutes faster, and the result cannot run the Vulkan tier — it
-#             answers `hello` without the feature, which is what the application and
-#             `dile transcribe` both check. This is what CI runs, where the point is that the
-#             configuration is exercised rather than that the binary works. It is also the
-#             sane default on this platform for a second reason: Vulkan on Intel integrated
-#             graphics has an open `DeviceLost` fault in whisper.cpp, so the CPU tier is the
-#             one Linux trusts (docs/PROJECT.md §3, engine tiers).
+#   --cpu     Build the engine host without `gpu-vulkan`. No Vulkan headers, no SPIR-V
+#             headers and no glslc needed, several minutes faster, and the result cannot run
+#             the Vulkan tier — it answers `hello` without the feature, which is what the
+#             application and `dile transcribe` both check. This is what CI runs, where the
+#             point is that the configuration is exercised rather than that the binary works.
+#             It is **not** what a Linux release is built with any more: measured on Intel
+#             Iris Xe under Mesa 26.1.8 the Vulkan tier is three to five times the CPU tier
+#             and steady where the CPU tier is not, so `scripts/build-installer.sh` packages
+#             the GPU host and the first-run probe decides per machine (docs/BUILDING.md,
+#             "The two tiers on Linux, measured").
 #
 #   --debug   Build the debug profile instead of release.
 #
@@ -109,11 +111,22 @@ else
     missing=()
     pkg-config --exists vulkan 2>/dev/null || missing+=("the Vulkan loader and headers")
     command -v glslc >/dev/null 2>&1 || missing+=("glslc, the shader compiler")
+    # The third one is not CMake's to find, and that is why it is checked here with the
+    # compiler rather than with pkg-config. `find_package(SPIRV-Headers)` succeeds off the
+    # CMake package config, and then `ggml-vulkan.cpp` includes `spirv/unified1/spirv.hpp`
+    # by `__has_include` without ever linking the target that carries its include directory
+    # -- so a machine with the config and no header on the default path configures cleanly
+    # and fails four minutes later, in the middle of the translation unit, as a missing
+    # file. Asking the compiler the same question it will ask is both the honest check and
+    # the early one, and it honours a `CXXFLAGS` that already points somewhere.
+    printf '#include <spirv/unified1/spirv.hpp>\n' |
+        ${CXX:-c++} ${CXXFLAGS:-} -fsyntax-only -x c++ - >/dev/null 2>&1 ||
+        missing+=("the SPIR-V headers, which ggml-vulkan includes directly")
     if [ "${#missing[@]}" -ne 0 ]; then
         echo
-        bad "The GPU build cannot start: CMake would not find ${missing[*]}."
-        hint "Fedora:  sudo dnf install vulkan-loader-devel vulkan-headers glslc"
-        hint "Debian:  sudo apt install libvulkan-dev glslc"
+        bad "The GPU build cannot start: it would not find ${missing[*]}."
+        hint "Fedora:  sudo dnf install vulkan-loader-devel vulkan-headers glslc spirv-headers-devel"
+        hint "Debian:  sudo apt install libvulkan-dev glslc spirv-headers"
         hint "Or pass --cpu to build a host that cannot run the Vulkan tier."
         exit 1
     fi

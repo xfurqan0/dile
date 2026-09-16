@@ -58,19 +58,6 @@ pub enum ProbeError {
     /// to probe. A CPU-only developer build, or a packaging mistake.
     #[error("the engine host was built without GPU support")]
     NoGpuSupport,
-    /// The platform does not put anybody on the GPU tier without being asked.
-    ///
-    /// Linux. Not a judgement about GPUs in general and not a permanent one: the probe costs
-    /// a cold load of the Vulkan tier's weights, which means downloading a gigabyte *first*,
-    /// and whisper.cpp has an open, unfixed `DeviceLost` fault on the Intel integrated
-    /// graphics the port was measured on. Spending somebody's bandwidth to find out whether
-    /// the tier crashes halfway through their first sentence is a bad first run.
-    ///
-    /// The tier is still reachable and still supported — `Settings > Engine > Tier`, which is
-    /// `engine.tier_override` in `settings.json`, takes the machine straight there without a
-    /// probe. What this refuses is choosing it *for* somebody.
-    #[error("the GPU tier is not probed automatically on this platform")]
-    NotProbedHere,
     /// `DILE_FORCE_PROBE_FAIL` was set. Debug builds only, and only so that the fallback
     /// path can be exercised on a machine whose GPU works.
     ///

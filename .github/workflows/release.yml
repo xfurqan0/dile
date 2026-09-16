@@ -234,11 +234,19 @@ jobs:
         with:
           tool: tauri-cli
 
-      # Tauri v2's own list, plus two. `libasound2-dev` is what `dile-capture` compiles
+      # Tauri v2's own list, plus five. `libasound2-dev` is what `dile-capture` compiles
       # against and `libayatana-appindicator3-dev` is what decides the **name of the tray
       # dependency written into the finished packages**: without it `tauri-cli` quietly writes
       # the 2018 `libappindicator3-1` instead. `scripts/build-installer.sh` refuses to build a
       # release without it rather than trusting this list to stay correct.
+      #
+      # The last three are the GPU build's, and they are the whole reason the Linux package
+      # can offer the Vulkan tier at all (2026-09-17). `spirv-headers` is the one that is
+      # easy to leave out and expensive to leave out: `find_package(SPIRV-Headers)` is not
+      # what needs it -- `ggml-vulkan.cpp` includes `spirv/unified1/spirv.hpp` directly by
+      # `__has_include` -- so without it the configure step passes and the build fails four
+      # minutes later inside a translation unit. `scripts/build-host.sh` asks the compiler
+      # for that header before it spends the minutes.
       - name: Install the system libraries
         run: |
           sudo apt-get update
@@ -248,7 +256,10 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
-            libasound2-dev
+            libasound2-dev \
+            libvulkan-dev \
+            glslc \
+            spirv-headers
 
       - name: Check CMake is present
         run: cmake --version

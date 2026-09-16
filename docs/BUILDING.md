@@ -554,7 +554,7 @@ Concretely:
 |---|---|
 | The trigger, hold-to-talk, right Ctrl | works, once one udev rule is installed — see below |
 | Microphone, pre-roll, VAD, 16 kHz | works, through ALSA — which is also how cpal reaches PipeWire |
-| The engine, `dile transcribe`, model download | works, on the CPU tier, with a floor — measured below |
+| The engine, `dile transcribe`, model download | works, on **both** tiers; the GPU is probed on first start, as on Windows — measured below |
 | Tray icon and menu | works, and on GNOME needs the AppIndicator extension — the application now says so itself when nothing is hosting one |
 | The clipboard | works, and it is how a dictation is handed over here: the card says *copied — press Ctrl+V to paste* |
 | Placing the card on a screen | **no** — `xdg-shell` has no global coordinate space |
@@ -584,12 +584,21 @@ without it `dile-capture` stops with *"The system library `alsa` required by cra
 was not found"*. It is needed even on a machine where PipeWire is what actually serves the
 stream — cpal reaches PipeWire through ALSA's compatibility layer.
 
-Two more, for the GPU build only, and skipped by `--cpu`:
+Four more for the GPU build, which is what a release is built with here and what
+`--cpu-engine` skips:
 
 ```bash
-sudo dnf install vulkan-loader-devel vulkan-headers glslc    # Fedora
-sudo apt install libvulkan-dev glslc                         # Debian and Ubuntu
+sudo dnf install vulkan-loader-devel vulkan-headers glslc spirv-headers-devel   # Fedora
+sudo apt install libvulkan-dev glslc spirv-headers                             # Debian and Ubuntu
 ```
+
+**The SPIR-V headers are the one that is easy to miss.** CMake does not ask for them on your
+behalf: `find_package(SPIRV-Headers)` succeeds off a package config while `ggml-vulkan.cpp`
+includes `spirv/unified1/spirv.hpp` directly through `__has_include`, and never links the
+target that carries its include directory. So a machine with the config and no header on the
+default include path **configures cleanly and fails four minutes later**, in the middle of a
+translation unit, as a missing file. `scripts/build-host.sh` puts that question to the
+compiler before it spends the minutes.
 
 ### The build
 
@@ -616,11 +625,12 @@ is the name `bundle.externalBin` looks for here.
 `PATH` for them before spending the minutes rather than letting CMake say `Could NOT find
 Vulkan (missing: Vulkan_LIBRARY Vulkan_INCLUDE_DIR glslc)` at the end of one.
 
-**`--cpu` is the sane default here for a second reason.** `whisper.cpp` has an open, unfixed
-`DeviceLost` fault on Intel integrated graphics under Mesa, so the CPU tier is the one a Linux
-build should trust until the probe has said otherwise on a particular machine. The engine
-runs in its own process precisely so that a driver fault takes the engine down and not the
-tray, which makes this a slower tier rather than a broken application — `docs/PROJECT.md` §3.
+**`--cpu` is what CI runs and what it is for.** It exercises the configuration without a
+Vulkan toolchain on the runner, and the binary it produces answers `hello` without the
+feature — which the application and `dile transcribe` both read, so a CPU-only host is
+recorded as exactly that rather than as a driver that failed. It is **not** what a release is
+built with here any more: see "The two tiers on Linux, measured" below for the numbers that
+changed that, and `scripts/build-installer.sh --cpu-engine` for a package built the old way.
 
 ### The packages
 
@@ -687,12 +697,14 @@ The same trap applies as on Windows: **cargo does not rebuild the native library
 tree that already built ggml without the map keeps what it has, the check goes red naming
 `ggml`, and the fix is `cargo clean -p transcribe-cpp-sys --release` and another run.
 
-**The packages carry the CPU engine host, not the Vulkan one.** Linux does not probe the GPU
-tier and never selects it for anybody, so a Vulkan host in the package would mean a Vulkan
-toolchain in every release build for a tier nothing chooses on its own — and an open,
-unfixed `DeviceLost` fault on Intel integrated graphics under Mesa is the reason it is not
-chosen. `Settings > Engine > Tier` still goes straight to it, on a host built with
-`--features gpu-vulkan` from source; the packages are what a person gets who did not ask.
+**The packages carry the Vulkan engine host**, and did not until 2026-09-17. Both halves of
+the old reasoning went at once: Linux now probes the GPU tier like Windows, so a package
+without a Vulkan host would be a probe with nothing to probe. It costs about 38 MB of
+compiled shaders in the engine binary and a hard `libvulkan.so.1`, which is why
+`tauri.linux.conf.json` names the loader in `depends` — a machine without one refuses the
+package rather than installing an engine that cannot start. `scripts/build-installer.sh
+--cpu-engine` builds the old shape for a machine or a distribution that does not want that
+dependency; the probe records a CPU-only host as exactly that, never as a driver that failed.
 
 **No AppImage.** Tauri's AppImage bundler downloads `appimagetool` and a copy of `patchelf` at
 bundle time and rewrites the binary's interpreter path; it is a second packaging format with a
@@ -721,41 +733,111 @@ is the one that answers here:
 `DILE_MODEL_DIR` overrides the second one in a debug build, which is how a machine that
 already holds these weights avoids downloading a second copy.
 
-### The engine on the CPU tier, measured
+### The two tiers on Linux, measured
 
-Linux does not probe the GPU tier. The probe costs a cold load of the Vulkan tier's weights,
-which means downloading a gigabyte *before* finding anything out, and whisper.cpp has an open,
-unfixed `DeviceLost` fault on the Intel integrated graphics this port was measured on. The
-tier is still there and still supported — `Settings > Engine > Tier`, which is
-`engine.tier_override` in `settings.json`, goes straight to it with no probe. What Dile
-refuses is choosing it for somebody.
+**Linux probes the GPU on first start, exactly as Windows does, and the packages carry an
+engine that can answer the probe.** That reverses the port's own first decision, which was
+that Linux would put nobody on the Vulkan tier without being asked. The reason it was taken —
+whisper.cpp's open, unfixed `DeviceLost` fault on Intel integrated graphics — was a report
+about somebody else's machine, and the way to settle a report about a driver is to run the
+driver. So it was run.
 
-So the CPU tier is what a Linux machine gets, and these are its numbers.
+Measured 2026-09-17 on the machine this port exists for: **i9-13900H, 6 P-cores and 8
+E-cores (20 threads), Intel Iris Xe RPL-P on Mesa 26.1.8 (ANV, Vulkan 1.4), Fedora 44,
+mains power, `powersave` governor with `balance_performance` EPP** — which is the Fedora
+default and not a slow setting, `intel_pstate` reporting turbo on and no frequency cap. The
+engine host is spoken to over its own wire with the model already loaded, which is the state
+the tray keeps it in, so these are what a dictation costs and not what a cold start costs.
 
-```bash
-dile transcribe crates/dile-app/assets/probe.wav --json --yes
-```
+| 3.00 s clip, model loaded | median | spread over the runs | transcript |
+|---|---|---|---|
+| **Vulkan tier — `ggml-large-v3-q5_0`** | **3.68 s** | 3.67 – 3.69 s | correct |
+| Vulkan, the CPU tier's smaller `turbo-q5_0` | 2.50 s | 2.48 – 2.51 s | correct |
+| **CPU tier — `turbo-q5_0`, 20 threads** | **14.6 s** | 8.4 – 26.0 s | correct |
 
-The committed probe clip is two seconds of Turkish with a known answer, which makes it the
-end-to-end check as well as the timing one:
+**The number that decided it is the third column.** The Vulkan tier is four times faster than
+the CPU tier, and it is *steady*: twelve consecutive transcriptions landed inside 20 ms of
+each other, where the CPU tier moved by a factor of three between runs of the same clip on
+the same machine in the same ten minutes. That laptop is power-limited rather than thermally
+limited — twenty threads of AVX2 GEMM pull the cores down to about 2 GHz against their 5.2 —
+so what the CPU tier costs depends on what else the machine is doing, and a dictation tool
+runs while somebody is working. The Vulkan tier was measured through the same interference
+and moved by 30 %.
+
+**Thirty runs, no `DeviceLost`.** Twelve of them back to back in one process. The fault the
+tier was held back over did not reproduce on this driver, and the transcript was
+`Bugün hava çok güzel ve deniz sakin.` — the clip's sentence, exactly — every single time,
+with and without a dictionary in the initial prompt. **The prompt is free on this tier**: 61 ms
+of the 3.68 s, and the same text out.
+
+Nothing here makes the tier a promise on hardware nobody has measured, and nothing needs to:
+**the probe is per machine.** A driver that returns garbage, hangs, or takes the engine
+process down drops that machine to the CPU tier and the answer is written to `engine.json`
+once, which is the whole arrangement `docs/PROJECT.md` §3 built for Windows.
+
+#### Where the time goes, and why a four-word sentence costs what a paragraph costs
+
+`TRANSCRIBE_PERF_DEBUG=1` on the engine host prints the stages. For the same 3 s clip:
+
+| stage | CPU tier, 20 threads | Vulkan tier |
+|---|---|---|
+| **encoder** | **13,484 ms — 92.6 %** | **2,977 ms — 80.1 %** |
+| cross-attention KV | 229 ms | 186 ms |
+| the prompt | 84 ms | 61 ms |
+| 13 decode steps | 723 ms | 460 ms |
+| total | 14,567 ms | 3,715 ms |
+
+**The encoder is the whole bill, and the encoder does not know how long the clip is.** Whisper
+pads every short-form request to a 30-second mel window — `transcribe-cpp`'s
+`arch/whisper/model.cpp` pads the PCM to `fe_n_samples` (480,000) and produces exactly
+`fe_nb_max_frames` (3,000) mel frames — so a 2 s clip, a 3 s clip and a 10 s clip all run
+1,500 encoder positions and all cost the same:
+
+| clip | Vulkan tier | CPU tier |
+|---|---|---|
+| 2.04 s (`probe.wav`) | 3.7 s | 14.3 s |
+| 3.00 s | 3.7 s | 14.6 s |
+| 10.00 s | 3.7 s | 14.5 s |
+
+A dictation has a **floor, not a duration**. Going below it means running the encoder on
+fewer positions, which is whisper's `audio_ctx` — and **`transcribe-cpp` 0.2.3 does not expose
+it.** `WhisperRunOptions` carries the prompt, the temperature and the thresholds and nothing
+about the encoder's context; `SessionOptions` carries threads, the KV type and the *decoder*
+context. 0.2.3 is the newest version published. The encoder graph the runtime builds is
+already capable of it — `build_encoder_graph` takes a prefix view of the positional
+embedding whenever `T_enc` is short of the maximum — so this is a missing knob rather than a
+missing capability, and it is the single largest speed-up available to this product on either
+tier. It is upstream work, not work in this repository.
+
+**OpenBLAS does not help here, and the measurement above is why.** `transcribe.cpp`'s README
+advertises it as a large win on the decode path, and that is true of the architectures whose
+decoders call `cblas_sgemv` directly — parakeet, gigaam. Whisper's decoder goes through ggml
+like everything else; the only `cblas` call on this path is the mel filterbank matmul in
+`src/transcribe-mel.cpp`, and the mel does not appear in the table above because it is below
+the noise of a 3.7-second measurement. `TRANSCRIBE_USE_SYSTEM_BLAS` is already `ON` by
+default in the vendored CMake, so nothing had to be turned on to find this out — and on
+Fedora the probe fails anyway, because `find_package(BLAS)`'s link check does not pass and
+`cblas.h` lives under `/usr/include/openblas/` rather than where `check_include_file` looks.
+Both facts point the same way: **there is no `--blas` switch on `build-host.sh` because there
+is nothing for it to buy.**
+
+#### What a cold start costs, on top
+
+The numbers above are the warm path, which is the one the tray runs: the engine process is
+started once and keeps its weights. `dile transcribe` is the cold path and pays three things
+the tray does not.
 
 ```text
-2.04 s of audio, 16000 Hz 1 channel(s) -> 16 kHz mono
-loading ggml-large-v3-turbo-q5_0.bin on the cpu tier
-{ "raw": "Bugün hava çok güzel ve deniz sakin.", … "took_ms": 14247, "device": "CPU" }
+$ dile transcribe clip-3s.wav --json --yes          # Vulkan tier
+  wall 6.3 – 6.7 s     took_ms 5,345 – 5,705
 ```
 
-**Two seconds of audio and a thirty-second one take the same time**, which is the single most
-useful thing to know about this tier. Whisper pads every request to a 30-second mel window, so
-the encoder does the same work either way: 14.3 s for the 2 s clip against 14.2 s for a 30 s
-one, on the same machine in the same minute. A dictation therefore has a **floor**, not a
-duration — a four-word sentence costs what a paragraph costs.
-
-| Clip | as the runtime would have it | as Dile asks for it |
-|---|---|---|
-| 2.04 s (`probe.wav`) | 28.3 s | **14.2 s** |
-| 30 s | 28.2 s | 14.2 s |
-| 60 s | 56.4 s | 29.9 s |
+* **~0.9 s** of process start, model load (`mmap` of a gigabyte, warm page cache) and reading
+  the WAV. The protocol itself is not in it: over the wire, a transcription's wall time and
+  the engine's own `took_ms` agree to within 10 ms, samples included.
+* **~1.7 s** on the *first* transcription in a Vulkan process, while the driver builds its
+  pipelines. The second one in the same process is back to 3.7 s, which is why this is a
+  start-up cost and not a per-dictation one.
 
 #### How many threads, and why it is not the runtime's own answer
 
@@ -795,11 +877,21 @@ Three rows of that table decided the policy:
   was measured on it, so the host leaves it alone. That is the only reason the resolution is
   device-aware.
 
-**These numbers are a floor, not a specification.** They were taken on a 14-core, 20-thread
-i9-13900H **running on battery** under the `powersave` governor, idling at 645 MHz against a
-5.4 GHz maximum. On mains power they can only improve. **OpenBLAS was not installed**
-(`openblas-devel`); `transcribe.cpp` documents it as a large win on the decode path, and it is
-the first thing to add before believing any of the above is the best this tier can do.
+**These numbers were taken on battery, and the plugged-in machine did not reproduce them.**
+The table above is a 14-core, 20-thread i9-13900H under the `powersave` governor on battery,
+idling at 645 MHz against a 5.4 GHz maximum, and on that machine more threads monotonically
+won. On mains power the same laptop is **power-limited rather than starved**: twenty threads
+of AVX2 GEMM pull every core down to about 2 GHz, and re-measuring on 2026-09-17 with the
+configurations interleaved — one run of each per pass, the order reversed on alternate
+passes, so drift lands on all of them — six threads and twenty threads did **not** separate
+at all. Their medians were 18.6 s and 16.2 s with single runs ranging from 14.3 s to 38.0 s,
+which is noise of the same size as the effect being looked for.
+
+**So the policy stands as measured and is not re-decided on worse evidence.** What the second
+measurement changes is the confidence attached to it: on this hardware, on mains power, the
+thread count is not the lever. `TRANSCRIBE_PERF_DEBUG` says why — 92.6 % of a CPU-tier
+dictation is one encoder pass over a fixed 1,500-position window, and the two things that
+move that are the device it runs on and how many positions it runs, in that order.
 
 Weights live where `crates/dile-client/src/paths.rs` said they would before any of this ran —
 `~/.local/share/io.github.xfurqan0.dile/models/` — and the downloader reaches Hugging Face

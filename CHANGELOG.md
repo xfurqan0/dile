@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 0.1.0 is the first release. The work packages that got it there are in `docs/PROJECT.md` §6.
 
+## [Unreleased]
+
+### Changed
+
+- **Linux gets the GPU tier, probed, like Windows.** The packages carry an engine host built
+  with `gpu-vulkan`, and the first start transcribes the committed two-second Turkish clip on
+  the GPU before trusting it — the same arrangement Windows has had since 0.1.0. Until now a
+  Linux machine went to the CPU tier and stayed there unless somebody set
+  `engine.tier_override` by hand, because whisper.cpp has an open, unfixed `DeviceLost` fault
+  on Intel integrated graphics under Mesa. Measured on exactly that hardware — Intel Iris Xe
+  on Mesa 26.1.8 — the fault did not happen in thirty transcriptions, and the tier
+  transcribes a three-second clip in **3.7 s against the CPU tier's 14.6 s**, varying by 20 ms
+  between runs where the CPU tier varies by seconds. A machine whose driver does fail the
+  probe drops to the CPU tier once and the answer is remembered, so nothing here is a promise
+  about hardware nobody has measured.
+  - **The packages now require a Vulkan loader** (`libvulkan1` on Debian, `libvulkan.so.1` on
+    rpm), because the engine binary links it. A machine without one refuses the package
+    rather than installing an engine that cannot start.
+  - The engine host grows from about 4 MB to about 42 MB, nearly all of it compiled shaders.
+    `scripts/build-installer.sh --cpu-engine` builds the smaller, CPU-only shape.
+
+### Fixed
+
+- **`scripts/build-host.sh` asks for the SPIR-V headers before it spends four minutes finding
+  out.** `ggml-vulkan.cpp` includes `spirv/unified1/spirv.hpp` directly and never links the
+  CMake target that carries its include directory, so a machine with the package config and
+  no header on the default path used to configure cleanly and then fail inside a translation
+  unit. The GPU pre-flight now puts that question to the compiler along with its existing
+  Vulkan loader and `glslc` checks, and names the package to install.
+
 ## [0.1.0] — 2026-09-15
 
 ### Added
