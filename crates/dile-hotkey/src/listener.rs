@@ -167,8 +167,9 @@ impl HotkeyListener {
     ///
     /// # Errors
     ///
-    /// [`Error::Hook`] if the operating system refused the hook, [`Error::Thread`] if the
-    /// thread could not be spawned.
+    /// [`Error::Hook`] if the operating system refused the hook, [`Error::KeyboardAccess`] on
+    /// Linux when the refusal was every input device turning this user away, [`Error::Thread`]
+    /// if the thread could not be spawned.
     pub fn spawn(config: HotkeyConfig) -> Result<Self, Error> {
         let (action_tx, action_rx) = mpsc::channel();
         let (command_tx, command_rx) = mpsc::channel();
@@ -200,7 +201,7 @@ impl HotkeyListener {
                         run(config, &keyboard, &action_tx, &command_rx, &thread_running);
                     }
                     Err(error) => {
-                        let _ = ready_tx.send(Err(Error::Hook(error.to_string())));
+                        let _ = ready_tx.send(Err(refusal(&error.to_string())));
                     }
                 }
             })
@@ -346,6 +347,105 @@ impl Drop for HotkeyListener {
             let _ = thread.join();
         }
     }
+}
+
+/// What a refused hook turns into: a reason, where there is one worth naming.
+///
+/// Windows and macOS have one story — the operating system said no, and the string it said it
+/// with is the most useful thing anybody has. Linux has two, and they are not the same
+/// problem. [`Scan`] is the difference, and [`decide`] is where it is read.
+#[cfg(target_os = "linux")]
+fn refusal(reported: &str) -> Error {
+    decide(scan_input_nodes(), reported)
+}
+
+/// The same, on a platform where the refusal is whatever the system said it was.
+#[cfg(not(target_os = "linux"))]
+fn refusal(reported: &str) -> Error {
+    Error::Hook(reported.to_owned())
+}
+
+/// How the kernel's input devices answered an attempt to open them.
+///
+/// Counts rather than a verdict, so that the verdict is a pure function and can be tested on
+/// a machine where `/dev/input` holds anything at all — a CI runner with no keyboard
+/// included, which is exactly the machine the real scan cannot be trusted on.
+///
+/// **There are two doors, not one**, and the trigger needs both. Reading key presses is
+/// `/dev/input/event*`; *swallowing* one is `/dev/uinput`, because a grabbed keyboard's other
+/// keys are re-injected through a clone and the clone is a uinput device. This crate always
+/// asks for a blocking listener — a lone-modifier trigger blocks nothing, but the panel's
+/// Enter, Esc and `Ctrl+C` are added to that same set while the card is up — so `handy-keys`
+/// checks uinput first and a machine without it never reaches the scan. One udev rule opens
+/// both, which is why one error covers both.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Scan {
+    /// Event nodes that opened for reading.
+    opened: usize,
+    /// Event nodes that refused this user.
+    refused: usize,
+    /// `/dev/uinput` exists and refused this user write access.
+    uinput_refused: bool,
+}
+
+/// Which error a refused hook deserves, given what the device nodes said.
+///
+/// A permission problem is *every* event node refusing and none opening, or `/dev/uinput`
+/// being there and saying no. One readable event node with a writable uinput means the hook
+/// failed for some other reason, and the honest thing is to pass on what the system said — a
+/// keyboard-access message in front of a real bug would send somebody to edit udev rules for
+/// an hour over something else entirely.
+///
+/// No nodes at all is not a permission problem either: a machine with no input devices is a
+/// container or a headless server, and telling its operator to install a udev rule would be a
+/// wrong answer confidently given.
+#[cfg(target_os = "linux")]
+fn decide(scan: Scan, reported: &str) -> Error {
+    if scan.uinput_refused || (scan.opened == 0 && scan.refused > 0) {
+        Error::KeyboardAccess
+    } else {
+        Error::Hook(reported.to_owned())
+    }
+}
+
+/// Try every `/dev/input/event*` node and `/dev/uinput`, and count how they answered.
+///
+/// Opens only, and nothing is read from or written to any of them — the question is whether
+/// the door opens, not what is behind it. A node that fails for any other reason (unplugged
+/// between the listing and the open, most likely; or uinput missing because the module is not
+/// loaded) is counted as neither: it is not evidence of a permission problem and not evidence
+/// against one.
+#[cfg(target_os = "linux")]
+fn scan_input_nodes() -> Scan {
+    let mut scan = Scan {
+        uinput_refused: matches!(
+            std::fs::OpenOptions::new().write(true).open("/dev/uinput"),
+            Err(ref error) if error.kind() == std::io::ErrorKind::PermissionDenied
+        ),
+        ..Scan::default()
+    };
+    let Ok(entries) = std::fs::read_dir("/dev/input") else {
+        return scan;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_event_node = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("event"));
+        if !is_event_node {
+            continue;
+        }
+        match std::fs::File::open(&path) {
+            Ok(_) => scan.opened += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                scan.refused += 1;
+            }
+            Err(_) => {}
+        }
+    }
+    scan
 }
 
 /// The set of hotkeys the hook swallows: a chord trigger, or nothing at all.
@@ -598,6 +698,8 @@ mod tests {
     use handy_keys::{Key as OsKey, KeyEvent as OsKeyEvent, Modifiers};
     use std::time::Instant;
 
+    #[cfg(target_os = "linux")]
+    use super::{Error, Scan, decide};
     use super::{
         blocking_set, chord_hotkey, from_os_key, map_modifier, panel_hotkeys, panel_key_of,
         to_os_key, translate,
@@ -896,5 +998,80 @@ mod tests {
             translate(&key_event(OsKey::C, true), chord_key, now),
             Some(Event::OtherKeyDown(now))
         );
+    }
+
+    // ------------------------------------------------------------------ a refused hook
+
+    /// The permission problem is every door refusing and none opening.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_hook_refused_by_every_input_node_is_a_keyboard_access_error() {
+        let scan = Scan {
+            opened: 0,
+            refused: 14,
+            uinput_refused: false,
+        };
+        assert!(matches!(
+            decide(scan, "Platform error: permission denied"),
+            Error::KeyboardAccess
+        ));
+    }
+
+    /// The other door, and the one a machine hits first: `handy-keys` checks uinput before it
+    /// scans, so a readable keyboard and an unwritable `/dev/uinput` is the same fix and has
+    /// to be the same message.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_readable_keyboard_with_no_uinput_is_still_a_keyboard_access_error() {
+        let scan = Scan {
+            opened: 14,
+            refused: 0,
+            uinput_refused: true,
+        };
+        assert!(matches!(
+            decide(scan, "hotkey blocking requires write access to /dev/uinput"),
+            Error::KeyboardAccess
+        ));
+    }
+
+    /// Both doors open means the hook failed for some other reason, and saying "fix your udev
+    /// rules" over a real bug would cost somebody an hour on the wrong thing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refusal_with_both_doors_open_keeps_the_systems_own_message() {
+        let scan = Scan {
+            opened: 1,
+            refused: 13,
+            uinput_refused: false,
+        };
+        let error = decide(scan, "some other reason entirely");
+        assert!(matches!(&error, Error::Hook(said) if said == "some other reason entirely"));
+    }
+
+    /// No input devices at all is a container or a headless machine, not a permission that
+    /// somebody forgot to grant.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_machine_with_no_input_devices_is_not_told_to_write_a_udev_rule() {
+        let scan = Scan::default();
+        assert!(matches!(decide(scan, "no devices"), Error::Hook(_)));
+    }
+
+    /// The sentence has to carry the fix, because it is the only place the person who hit
+    /// this will look.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_keyboard_access_message_names_the_rule_that_fixes_it() {
+        let said = Error::KeyboardAccess.to_string();
+        assert!(said.contains("/dev/input/event*"), "{said}");
+        assert!(said.contains("/dev/uinput"), "{said}");
+        assert!(
+            said.contains("packaging/linux/70-dile-input.rules"),
+            "{said}"
+        );
+        assert!(said.contains("docs/BUILDING.md"), "{said}");
+        // Not the advice `handy-keys` gives: `usermod -aG input` grants every process this
+        // account ever starts, for as long as the account exists.
+        assert!(!said.contains("usermod"), "{said}");
     }
 }

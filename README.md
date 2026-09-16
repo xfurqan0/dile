@@ -228,7 +228,12 @@ inside the application.
 
 ## Known limits
 
-- **Windows only.** macOS and Linux come from the same codebase in v2.
+- **Windows is what ships.** There is no Linux release. The workspace builds and tests
+  there and the trigger, the microphone and the engine all work, but placing the card on
+  a screen, naming the application you are dictating into and pasting the text do not —
+  a Wayland client cannot be told which window has the focus or put a window at a
+  coordinate. `docs/BUILDING.md`, "Building on Linux", is the honest table. macOS comes
+  from the same codebase later.
 - Dictation, not transcription. Recording is capped at 60 s by default and 300 s at most;
   meeting recordings, file batches and subtitle files are deliberately out of scope.
 - The CPU fallback tier is slower than real time. It is a fallback, not a mode to choose.
@@ -244,7 +249,8 @@ inside the application.
 - **v1** — Windows, hold-to-talk, local engine with GPU support, Turkish cleanup, personal
   dictionary, review panel, paste into the active window, minimal CLI. This release.
 - **v2** — a Turkish fine-tune of our own; "brief mode", which turns what you said into a
-  structured instruction for a coding agent; macOS and Linux builds.
+  structured instruction for a coding agent; macOS and Linux builds. The Linux one is
+  under way: the trigger, the microphone and the engine run there today.
 - **later** — live streaming, per-app profiles, translation.
 
 ## Building
@@ -259,6 +265,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-host.ps1 -Cpu 
 cargo test --workspace
 cargo tauri build --debug --no-bundle
 ```
+
+On Linux the same three steps are `scripts/build-host.sh --cpu --debug` and then the two cargo
+lines, plus a handful of `-dev` packages. **The trigger needs one udev rule there** — Dile
+reads key presses from the kernel's input devices, which is the only way hold-to-talk on a
+lone right Ctrl works under Wayland, and no distribution grants that by default.
+`packaging/linux/70-dile-input.rules` is the rule and "Keyboard access on Linux" in
+`docs/BUILDING.md` says plainly what it grants.
 
 [docs/BUILDING.md](docs/BUILDING.md) has the prerequisites, the traps and how the installer is
 built; [docs/RELEASE.md](docs/RELEASE.md) is the release checklist;

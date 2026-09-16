@@ -16,6 +16,8 @@
   "dialog.model.body": "Dile needs a speech model before it can write anything down. It downloads {model} — {size} — from huggingface.co, once. What you say is transcribed on this machine and never leaves it.",
   "dialog.model.download": "Download",
   "dialog.model.later": "Not now",
+  "dialog.keyboard.title": "Dile cannot read the keyboard",
+  "dialog.keyboard.body": "Dile watches for the trigger at the kernel's input devices rather than asking the desktop, which is how one key behaves the same under Wayland, X11 and a plain console \u2014 and Linux does not grant that to an ordinary user by default.\n\nInstall the rule that opens it, from the Dile sources:\n\n    sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/\n    sudo udevadm control --reload && sudo udevadm trigger\n\nIt takes effect at once and needs no logging out. What it grants is real and worth knowing: while you are logged in at this machine, a program running as you can read the keyboard whatever window has the focus. \"Keyboard access on Linux\" in docs/BUILDING.md is the long version.",
   "settings.title": "Dile settings",
   "settings.nav.hotkey": "Hotkey and recording",
   "settings.nav.cleanup": "Sound and cleanup",

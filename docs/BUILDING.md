@@ -535,7 +535,7 @@ Concretely:
 
 | | On Linux today |
 |---|---|
-| The trigger, hold-to-talk, right Ctrl | works, and needs read access to `/dev/input/event*` |
+| The trigger, hold-to-talk, right Ctrl | works, once one udev rule is installed — see below |
 | Microphone, pre-roll, VAD, 16 kHz | works, through ALSA (which is also how cpal reaches PipeWire) |
 | The engine, `dile transcribe`, model download | works; CPU tier |
 | Tray icon and menu | works, and on GNOME needs the AppIndicator extension |
@@ -627,6 +627,71 @@ is the one that answers here:
 
 `DILE_MODEL_DIR` overrides the second one in a debug build, which is how a machine that
 already holds these weights avoids downloading a second copy.
+
+### Keyboard access on Linux
+
+**The trigger does not work until this is done, and it is one command.** It is also the one
+thing on this page worth reading before running: it grants something real.
+
+Dile watches for the trigger at the kernel's input devices instead of asking the desktop for a
+shortcut. That is not a shortcut of its own — it is the only way hold-to-talk exists on
+Wayland at all. A compositor will not hand a lone modifier to an application (mutter rejects a
+modifier-only accelerator outright, and the shortcuts specification has no way to say "the
+*right* Ctrl"), and the desktop shortcut registries it offers instead run a command with no
+release event, which turns hold-to-talk into toggle. Reading evdev needs neither an X11 nor a
+Wayland connection, keeps the two sides of Ctrl apart, and behaves the same on a bare console.
+
+Two device nodes, one permission:
+
+| Node | What it is for |
+|---|---|
+| `/dev/input/event*` | seeing a key go down and come back up |
+| `/dev/uinput` | *swallowing* one. Blocking a key means grabbing the keyboard and re-injecting everything that is not the trigger through a clone, and the clone is a uinput device. |
+
+Dile asks for the second even though the shipped trigger — the right Ctrl, alone — blocks
+nothing: the review card adds Enter, Esc and `Ctrl+C` to the same set while it is on screen,
+and an Enter that transfers the text and *also* lands in the document behind it is exactly the
+bug that set prevents. `handy-keys` checks uinput before it scans, so a machine with only half
+the permission fails on that half.
+
+```bash
+sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Immediate, and no logging out.
+
+**What it grants, in plain words.** The rule tags those devices `uaccess`, so logind hands
+them to whoever is logged in at the seat as an ACL and takes them back at logout. While you
+are logged in at this machine, a program running as you can read the keyboard whatever window
+has the focus — which is the door Wayland closes on purpose, reopened for the local seat. It
+is the trade every push-to-talk tool on Linux makes. Dile's side of it is that the audio and
+the text never leave the machine.
+
+**Not `usermod -aG input $USER`.** `handy-keys` suggests it and the internet suggests it, and
+it is the worse of the two: group membership grants every process that account ever starts —
+an SSH session from somewhere else included — the ability to read every keystroke on the
+machine, permanently, whether or not anybody is sitting at it. The `uaccess` rule is narrower
+in both directions and takes effect faster.
+
+`packaging/linux/70-dile-input.rules` carries the same explanation, and the number matters:
+`uaccess` tags are collected by `73-seat-late.rules`, so anything numbered above that is read
+too late to do anything.
+
+**Check it without starting the application:**
+
+```bash
+cargo run -p dile-hotkey --example hotkey_probe -- --seconds 30 --trigger RightCtrl
+```
+
+Before the rule, it stops on the sentence that names the rule. After it, it prints
+`hook installed` and then a line per decision — hold the right Ctrl for a second and let go,
+and `StartRecording` and `StopRecording` appear with the time between them. There is no layout
+column as there is on Windows: evdev reports scancodes from below the layout, so the trigger
+is the same physical key whichever one is selected.
+
+Inside the application the same failure is a dialog rather than a log line, because a tray
+application that exits before it has a tray has no other way to say anything.
 
 ### The tray on GNOME
 

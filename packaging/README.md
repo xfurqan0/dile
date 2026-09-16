@@ -1,5 +1,23 @@
 # Packaging
 
+## linux/70-dile-input.rules
+
+The udev rule that lets the trigger see the keyboard. Dile reads `/dev/input/event*` rather
+than asking a window system, which is the only way hold-to-talk on a lone right Ctrl works
+under Wayland — and no distribution grants that to an ordinary user by default.
+
+It is `TAG+="uaccess"` and not an `input` group membership, deliberately: logind gives the
+device to whoever is logged in at the seat and takes it back when they log out, where
+`usermod -aG input` would give every process that account ever starts — an SSH session
+included — the ability to read every keystroke on the machine for as long as the account
+exists. The file says the same thing at length, including what the rule honestly costs.
+
+**The packages do not install it yet.** `deb` and `rpm` could run it from a post-install
+script and an AppImage could offer it through `pkexec` on first run, and both of those are
+decisions about what a first launch is allowed to ask for. Until then the file is documented
+in `docs/BUILDING.md` and installed by hand, and `dile-hotkey` names it in the one error that
+a person who needs it will actually see.
+
 ## winget manifests
 
 The three files in `winget/` are the package as

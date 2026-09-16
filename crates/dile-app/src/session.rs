@@ -55,6 +55,7 @@ use dile_capture::{Capture, LevelReceiver, Recording};
 use dile_hotkey::{Action, HotkeyListener};
 use serde::Serialize;
 use tauri::AppHandle;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 // `Manager` is only what `AppHandle::path` needs, and that call lives in
 // `save_last_recording`, which is a debug build's alone.
 #[cfg(debug_assertions)]
@@ -140,6 +141,11 @@ impl Elapsed {
 /// to start rather than to sit in the tray doing nothing. A microphone that will not open is
 /// **not** an error here — it is reported on the tray and retried at the next press, because
 /// a device can be plugged in a minute later.
+///
+/// **One of those failures gets a window before the process ends.** On Linux the trigger
+/// needs a permission the distribution does not grant, and a tray application that exits with
+/// a line on a stderr nobody is reading has told the user nothing. [`no_keyboard_access`] is
+/// that window, and it is the one case where failing to start is not the whole answer.
 pub fn start(
     ui: Ui,
     store: SettingsStore,
@@ -147,7 +153,16 @@ pub fn start(
     panel: Arc<Panel>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let settings = store.get();
-    let listener = HotkeyListener::spawn(settings.hotkey_config())?;
+    let listener = match HotkeyListener::spawn(settings.hotkey_config()) {
+        Ok(listener) => listener,
+        Err(error) => {
+            log::error!("the trigger could not be installed: {error}");
+            if matches!(error, dile_hotkey::Error::KeyboardAccess) {
+                no_keyboard_access(&ui);
+            }
+            return Err(Box::new(error));
+        }
+    };
     // The panel arms and disarms its three keys on whichever hook is installed right now,
     // and this is that hook. Re-attached in `reapply` every time the trigger changes.
     panel.attach(listener.remote());
@@ -173,6 +188,27 @@ pub fn start(
         .spawn(move || run(&ui, &store, &engine, &panel, listener, &pending))?;
 
     Ok(())
+}
+
+/// Say, in a window, that the keyboard cannot be read — and what opens it.
+///
+/// The application is about to exit, and on Linux it is a tray application with no tray yet
+/// and quite possibly no terminal behind it: an error on stderr at this moment reaches
+/// nobody. A native dialog is the only surface that exists before the tray does, which is the
+/// same reason the model-download consent uses one.
+///
+/// It is not shown for any other hotkey failure. Everything else the operating system refuses
+/// a hook for is a bug or a conflict with another program, and neither has a paragraph a user
+/// can act on; this one does, and the paragraph is the point of the window.
+fn no_keyboard_access(ui: &Ui) {
+    let strings = ui.strings();
+    ui.app()
+        .dialog()
+        .message(strings.text("dialog.keyboard.body"))
+        .title(strings.text("dialog.keyboard.title"))
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::Ok)
+        .blocking_show();
 }
 
 /// The session thread: one action at a time, in the order the user produced them.

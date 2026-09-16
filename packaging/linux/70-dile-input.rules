@@ -1,0 +1,45 @@
+# Dile — keyboard access for whoever is logged in at this machine.
+#
+# Dile reads key presses from the kernel's input devices instead of from a window system.
+# That is what makes one trigger behave the same under Wayland, under X11 and on a bare
+# console, and it is the only way to get hold-to-talk on a right Ctrl at all: a Wayland
+# compositor will not hand a lone modifier to an application, and the desktop shortcut
+# registries it offers instead have no release event, which turns hold-to-talk into toggle.
+#
+# Two nodes, one permission:
+#
+#   /dev/input/event*   reading a press
+#   /dev/uinput         swallowing one. A blocked key means the keyboard is grabbed and
+#                       everything that is not the trigger is re-injected through a clone,
+#                       and the clone is a uinput device. Dile asks for this even with the
+#                       shipped lone-modifier trigger, which blocks nothing, because the
+#                       review card adds Enter, Esc and Ctrl+C to the same set while it is
+#                       on screen — an Enter that transfers the text and also lands in the
+#                       document behind it is the bug this prevents.
+#
+# TAG+="uaccess" rather than a group. systemd-logind hands the device to the user who is
+# currently logged in at the seat, as an ACL, and takes it back when they log out. The
+# alternative that is usually suggested — usermod -aG input $USER — grants every process
+# that account ever starts, an SSH session from another continent included, the ability to
+# read every keystroke on this machine, permanently. This rule grants the same capability to
+# the person sitting in front of it, for as long as they are sitting in front of it.
+#
+# **Be clear about what that is.** Any program running as that user can then read the
+# keyboard, whatever window has the focus. Wayland closes that door on purpose and this rule
+# opens it again for the local seat. It is the same trade every push-to-talk tool on Linux
+# makes; Dile's part of the bargain is that the audio and the text never leave the machine.
+#
+# The number matters: uaccess tags are collected by 73-seat-late.rules, so a rule that
+# applies one has to be read before it. Anything below 73 works; 70 leaves room.
+#
+# Install by hand:
+#
+#   sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#
+# It takes effect immediately and needs no logout. The .deb and .rpm are not installing it
+# yet — that is a packaging decision, not a technical one, and it belongs with the release
+# rather than with the port.
+
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"
+KERNEL=="uinput", TAG+="uaccess"

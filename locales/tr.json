@@ -16,6 +16,8 @@
   "dialog.model.body": "Dile'nin bir şey yazabilmesi için konuşma modeli gerekiyor. {model} dosyasını — {size} — huggingface.co adresinden bir kez indirir. Söyledikleriniz bu makinede yazıya dökülür ve buradan hiçbir yere gitmez.",
   "dialog.model.download": "İndir",
   "dialog.model.later": "Şimdi değil",
+  "dialog.keyboard.title": "Dile klavyeyi okuyamıyor",
+  "dialog.keyboard.body": "Dile kısayolu masaüstüne sormak yerine çekirdeğin girdi aygıtlarından izler; tek bir tuşun Wayland'de, X11'de ve düz konsolda aynı davranmasının yolu bu \u2014 ve Linux bunu sıradan bir kullanıcıya varsayılan olarak vermez.\n\nBunu açan kuralı Dile kaynaklarından kurun:\n\n    sudo install -m 0644 packaging/linux/70-dile-input.rules /etc/udev/rules.d/\n    sudo udevadm control --reload && sudo udevadm trigger\n\nAnında etkili olur, oturumu kapatmanız gerekmez. Verdiği yetki gerçek ve bilinmeye değer: bu makinede oturumunuz açıkken, sizin adınıza çalışan bir program hangi pencere odaktaysa olsun klavyeyi okuyabilir. Uzun hâli docs/BUILDING.md içindeki \"Keyboard access on Linux\" bölümünde.",
   "settings.title": "Dile ayarları",
   "settings.nav.hotkey": "Kısayol ve kayıt",
   "settings.nav.cleanup": "Ses ve temizlik",

@@ -35,14 +35,20 @@
 //!
 //! It exits on its own after `--seconds` so that an unattended run cannot leave a global
 //! keyboard hook installed. Ctrl+C also works, but it is a hard exit: the hook is then
-//! removed by Windows at process teardown rather than by the listener's `Drop`.
+//! removed by the operating system at process teardown rather than by the listener's `Drop`.
+//!
+//! **On Linux this is also the permission check.** The listener needs to read
+//! `/dev/input/event*` and to write `/dev/uinput`, and a machine that has not been given
+//! either stops here rather than three screens into the application — with the one sentence
+//! that says which rule fixes it. There is no layout column: evdev delivers scancodes from
+//! below the layout, so the trigger is the same physical key whichever one is selected.
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn main() {
-    eprintln!("hotkey_probe needs a Windows keyboard hook; there is no adapter for this OS yet.");
+    eprintln!("hotkey_probe needs a keyboard adapter, and this OS does not have one yet.");
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
@@ -78,7 +84,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  layout now        {}", describe_layout());
     println!("  running for       {} s\n", options.seconds);
 
-    let listener = HotkeyListener::spawn(config)?;
+    let listener = match HotkeyListener::spawn(config) {
+        Ok(listener) => listener,
+        Err(error) => {
+            // Printed here rather than returned. A `Box<dyn Error>` out of `main` is formatted
+            // with `Debug`, which for a unit variant is the word `KeyboardAccess` and none of
+            // the sentence that says what to do about it — and that sentence is the entire
+            // reason this probe is the first thing to run on a new machine.
+            eprintln!("\n{error}");
+            std::process::exit(1);
+        }
+    };
     println!("hook installed. press the trigger.\n");
 
     let started = Instant::now();
@@ -117,14 +133,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The arguments, and nothing clever about them.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 struct Options {
     seconds: u64,
     toggle: bool,
     trigger: dile_hotkey::Trigger,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Options {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut options = Self {
@@ -159,6 +175,19 @@ impl Options {
         }
         Ok(options)
     }
+}
+
+/// The same question on Linux, which does not have it.
+///
+/// Nothing here is a lie by omission: a Wayland client is not told which window has the focus,
+/// so there is no "the focused window's layout" to report. It would not be the right question
+/// anyway — this listener reads evdev, which delivers scancodes from the kernel *below* the
+/// layout, so the trigger is the same physical key whichever layout is selected. That is the
+/// property the Windows column of this probe is checking for, already true here by
+/// construction.
+#[cfg(target_os = "linux")]
+fn describe_layout() -> String {
+    "below the layout (evdev scancodes)".to_owned()
 }
 
 /// The keyboard layout of the window that currently has focus, as its hex language id.
