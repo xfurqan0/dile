@@ -764,8 +764,11 @@ so what the CPU tier costs depends on what else the machine is doing, and a dict
 runs while somebody is working. The Vulkan tier was measured through the same interference
 and moved by 30 %.
 
-**Thirty runs, no `DeviceLost`.** Twelve of them back to back in one process. The fault the
-tier was held back over did not reproduce on this driver, and the transcript was
+**Thirty runs, no `DeviceLost`.** Twelve of them back to back in one process, and the same
+clip put through **upstream whisper.cpp's own Vulkan backend** on the same GPU lands within
+30 ms of the figure above — so the runtime's Vulkan path is not an outlier, and neither
+number rests on the other. The fault the tier was held back over did not reproduce on this
+driver, and the transcript was
 `Bugün hava çok güzel ve deniz sakin.` — the clip's sentence, exactly — every single time,
 with and without a dictionary in the initial prompt. **The prompt is free on this tier**: 61 ms
 of the 3.68 s, and the same text out.
@@ -806,8 +809,30 @@ about the encoder's context; `SessionOptions` carries threads, the KV type and t
 context. 0.2.3 is the newest version published. The encoder graph the runtime builds is
 already capable of it — `build_encoder_graph` takes a prefix view of the positional
 embedding whenever `T_enc` is short of the maximum — so this is a missing knob rather than a
-missing capability, and it is the single largest speed-up available to this product on either
-tier. It is upstream work, not work in this repository.
+missing capability.
+
+**It is also not simply waiting upstream.** The knob was proposed to the runtime
+(handy-computer/transcribe.cpp#149) and **declined**: the maintainer's position is that an
+environment flag is a hack and that some latency is worth paying for correctness. So the
+route to it is a vendored patch and a fork to maintain, which is a decision about what this
+product is willing to carry rather than a patch to write — and it is the single largest
+speed-up available on either tier, which is why it is written down here rather than left as
+a shrug.
+
+**And it is not a dial to turn down blindly.** Shortening the window puts the decoder into a
+repeat loop, which trips `compression_ratio_thold`, which starts the temperature fallback
+ladder — and the time saved in the encoder comes back multiplied in the decoder. Measured on
+this machine through the upstream implementation, a 3 s clip is clean at 512 encoder
+positions and *slower* at 256; a 30 s clip at 512 took eight times the default and
+hallucinated. Anything built on this has to carry a rule that scales with the audio, and a
+correctness check beside it.
+
+**A related thread, left deliberately untouched.** `run_options` pins `temperature` at 0 and
+says nothing about `temperature_inc`, so the runtime's own default of 0.2 stands and the
+fallback ladder is armed. That is a recovery layer, not a bug, and the stage counters above
+show it **did not fire** on any clip measured here — `chunks=1 encs=1 crosses=1 prompts=1
+steps=13`, one clean pass. Turning it off would be a change to what happens on the recordings
+that need it, so it wants its own measurement on real dictation first.
 
 **OpenBLAS does not help here, and the measurement above is why.** `transcribe.cpp`'s README
 advertises it as a large win on the decode path, and that is true of the architectures whose
