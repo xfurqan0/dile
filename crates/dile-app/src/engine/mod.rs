@@ -326,16 +326,19 @@ struct Supervisor {
     status: Arc<Mutex<EngineSnapshot>>,
     /// Where a finished dictation goes. See [`Supervisor::deliver`].
     panel: Arc<Panel>,
-    /// CPU threads for the engine; 0 leaves it to the runtime.
+    /// CPU threads for the engine; 0 asks the host to decide.
     ///
-    /// Zero is right on the Vulkan tier, where almost nothing runs on the CPU. On the
-    /// fallback tier it has now been measured, and it is not right there: the runtime's own
-    /// default caps at eight threads, so a 20-thread machine runs the CPU tier at half the
-    /// speed it could (`dile-engine`, `Model::engine_with_threads`, has the numbers).
-    /// Changing it is a decision about the fallback tier on every platform, which is why it
-    /// is still zero and why the measurement is written down rather than acted on here.
-    /// Not a setting either way: a number nobody can measure the effect of is not a question
-    /// to put on a form.
+    /// **And the host's decision is no longer the runtime's own.** `transcribe-cpp` caps its
+    /// default at eight threads, which runs the CPU tier on a 20-thread machine at half the
+    /// speed it could; `dile_engine::default_threads` carries the measurement and
+    /// `dile-engine-host` applies it, on the CPU tier only, because that is the only tier it
+    /// was measured on. Zero still goes over the wire, because how many threads to use
+    /// belongs to the machine the engine is running on rather than to the application that
+    /// asked it for a sentence — and on Windows the two are the same machine only by
+    /// coincidence of the current packaging.
+    ///
+    /// Not a setting: a number nobody can measure the effect of is not a question to put on
+    /// a form.
     threads: u32,
     /// The tier this machine decided on.
     tier: Option<Device>,

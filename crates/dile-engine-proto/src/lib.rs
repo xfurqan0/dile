@@ -319,7 +319,13 @@ pub enum Request {
         /// Which device to put it on. A device this build cannot offer is an error
         /// response, never a silent fall back to the CPU.
         device: Device,
-        /// CPU threads for the work that runs on the CPU; 0 is the runtime's own default.
+        /// CPU threads for the work that runs on the CPU; 0 asks the host to choose.
+        ///
+        /// Not "the runtime's own default", which is what this field used to say: the host
+        /// resolves a zero on the CPU tier to `dile_engine::default_threads`, because the
+        /// runtime's default caps itself at eight and leaves the rest of a modern machine
+        /// idle. A client that has an opinion sends the number; one that has none sends
+        /// nothing and gets the machine it is running on.
         #[serde(default)]
         threads: u32,
     },

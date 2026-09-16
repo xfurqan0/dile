@@ -382,6 +382,9 @@ fn transcribe(
         tier.as_str()
     );
     let model_path = model.to_string_lossy().into_owned();
+    // `0` is "you choose", not "use one thread" and not "use the runtime's cap of eight":
+    // the host resolves it against the machine it is running on, which is the same machine
+    // this command is running on. `dile_engine::default_threads` has the measurement.
     host.load(&model_path, tier, 0).map_err(host_failure)?;
 
     let prompt = settings.dictionary().prompt().unwrap_or_default();

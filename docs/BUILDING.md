@@ -649,7 +649,7 @@ end-to-end check as well as the timing one:
 ```text
 2.04 s of audio, 16000 Hz 1 channel(s) -> 16 kHz mono
 loading ggml-large-v3-turbo-q5_0.bin on the cpu tier
-{ "raw": "Bugün hava çok güzel ve deniz sakin.", … "took_ms": 14279, "device": "CPU" }
+{ "raw": "Bugün hava çok güzel ve deniz sakin.", … "took_ms": 14247, "device": "CPU" }
 ```
 
 **Two seconds of audio and a thirty-second one take the same time**, which is the single most
@@ -658,22 +658,49 @@ the encoder does the same work either way: 14.3 s for the 2 s clip against 14.2 
 one, on the same machine in the same minute. A dictation therefore has a **floor**, not a
 duration — a four-word sentence costs what a paragraph costs.
 
-| Clip | `threads: 0` | `threads: 20` |
+| Clip | as the runtime would have it | as Dile asks for it |
 |---|---|---|
-| 2.04 s (`probe.wav`) | 28.4 s | 14.3 s |
+| 2.04 s (`probe.wav`) | 28.3 s | **14.2 s** |
 | 30 s | 28.2 s | 14.2 s |
 | 60 s | 56.4 s | 29.9 s |
 
-Real-time factor against the 30-second window: **0.94** as the product runs today, **0.47**
-with the threads asked for explicitly. Three runs of each of the two configurations, spread
-under half a second.
+#### How many threads, and why it is not the runtime's own answer
 
 **`0` does not mean "use this machine".** `transcribe-cpp`'s default is the number of CPUs the
 process may run on *capped at eight* — `src/transcribe-batch-util.h`,
-`default_n_threads(int cap = 8)` — so everything above eight hardware threads sits idle.
-Nothing in this workspace passes anything but `0` yet: raising it is a decision about the
-fallback tier on Windows as much as here, and it wants a Windows measurement beside this one
-before it is taken.
+`default_n_threads(int cap = 8)` — so everything above eight hardware threads sits idle. That
+cap is not read out of a header here, it is **observed**: `0` and `8` produce the same figure
+to within a tenth of a second on a machine that has twenty threads.
+
+Three runs of each configuration against `probe.wav`, spoken to the engine host over its own
+wire so that the only thing changing is the number:
+
+| threads | median | real-time factor against the 30 s window |
+|---|---|---|
+| `0`, as the runtime would have it | 28.3 s | 0.94 |
+| 8 | 28.3 s | 0.94 |
+| 10 | 23.1 s | 0.77 |
+| 14 — the physical cores | 17.5 s | 0.58 |
+| **20 — every hardware thread** | **15.0 s** | **0.50** |
+| 32 — more than the machine has | 25.7 s | 0.86 |
+
+So `dile_engine::default_threads` asks for **every hardware thread the machine reports**,
+capped at 32, and `dile-engine-host` resolves a `threads: 0` request to it on the CPU tier.
+A dictation on this laptop costs **14.2 s where it used to cost 28.3 s**, measured end to end
+through the same wire the application uses.
+
+Three rows of that table decided the policy:
+
+* **Logical, not physical.** The eight hyperthreads on top of the fourteen physical cores were
+  worth another 14 %. Small, but the right sign — and reading a physical core count takes a
+  different piece of platform code on every platform, for a number that measured *worse*.
+* **Never more than the machine has.** Thirty-two threads on a twenty-thread machine measured
+  slower than the runtime's own cap; oversubscription gives the win straight back. The 32
+  ceiling in `MAX_THREADS` exists for the other end of the range, where the gain was already
+  sublinear at twenty.
+* **The Vulkan tier keeps its `0`.** Almost nothing runs on the CPU there and none of the above
+  was measured on it, so the host leaves it alone. That is the only reason the resolution is
+  device-aware.
 
 **These numbers are a floor, not a specification.** They were taken on a 14-core, 20-thread
 i9-13900H **running on battery** under the `powersave` governor, idling at 645 MHz against a

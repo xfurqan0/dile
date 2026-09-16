@@ -161,6 +161,17 @@ impl Host {
             Device::Vulkan => Compute::Vulkan,
         };
 
+        // **Where "you decide" is decided**, and here rather than in the application because
+        // this is the only place that knows which device was asked for. On the CPU tier the
+        // runtime's own answer leaves most of a modern machine idle
+        // (`dile_engine::default_threads` carries the measurement); on the Vulkan tier almost
+        // nothing runs on the CPU, the number was never measured there, and changing it
+        // unmeasured is how the main tier on a Windows machine gets slower for a Linux reason.
+        let threads = match (threads, device) {
+            (0, Device::Cpu) => dile_engine::default_threads(),
+            (asked, _) => asked,
+        };
+
         // Dropped before the load rather than after: two multi-gigabyte models in memory at
         // once is how a machine with 16 GB of RAM fails a tier switch.
         self.engine = None;
@@ -185,8 +196,17 @@ impl Host {
 
         let took = started.elapsed();
         let backend = model.backend();
+        // The thread count is in the line because it is the one load parameter a person
+        // looking at a slow dictation can do something about, and because a request that said
+        // `0` and a log line that says twenty is how the resolution above is seen to have
+        // happened at all.
+        let asked_for = if threads == 0 {
+            String::from("the runtime's own number of cpu threads")
+        } else {
+            format!("{threads} cpu threads")
+        };
         note(&format!(
-            "loaded {} on {backend} ({} arch) in {} ms",
+            "loaded {} on {backend} ({} arch) with {asked_for} in {} ms",
             path,
             model.arch(),
             took.as_millis()

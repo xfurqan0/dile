@@ -60,6 +60,72 @@ use transcribe_cpp::{
 /// The sample rate every buffer this crate accepts must be at.
 pub const SAMPLE_RATE: u32 = 16_000;
 
+/// The most threads [`default_threads`] will ever ask for, however large the machine is.
+///
+/// A ceiling rather than a target, and the measurement below is why there is one at all:
+/// asking for more threads than a machine has is not merely wasted, it is **slower than the
+/// runtime's own capped default**. On the 14-core, 20-thread i9-13900H the CPU tier was
+/// measured at, thirty-two threads took 25.7 s against twenty's 15.0 s and the capped
+/// default's 28.3 s — oversubscription gave most of the win straight back. Nothing below can
+/// exceed what [`std::thread::available_parallelism`] reports, so this number never bites on
+/// a machine like that one; it is here for the other end, where the gain from more threads
+/// was already sublinear at twenty (ten to twenty threads bought 1.54x, not 2x) and a
+/// hundred and twenty-eight of them would buy contention.
+pub const MAX_THREADS: u32 = 32;
+
+/// How many CPU threads the engine should ask for on a machine that has `available` of them.
+///
+/// The whole of the policy, as a function of one number, so that the decision is testable on
+/// a runner whose core count is nothing like a laptop's. [`default_threads`] is this function
+/// applied to the machine it is running on.
+///
+/// `None` means the platform would not say how much parallelism there is, and the answer is
+/// then `0` — which is the wire and runtime spelling of *you decide*. A guess would be worse
+/// than the runtime's own conservative default in exactly the case where nothing is known.
+#[must_use]
+pub fn threads_for(available: Option<std::num::NonZeroUsize>) -> u32 {
+    let Some(available) = available else {
+        return 0;
+    };
+    // `usize` to `u32` cannot be done by `try_from` alone here without turning a machine with
+    // more threads than `u32` can hold into a zero, which would read as "you decide" and
+    // quietly undo the whole change. Saturating, then clamped, keeps a huge machine at the
+    // ceiling where it belongs.
+    let available = u32::try_from(available.get()).unwrap_or(u32::MAX);
+    available.min(MAX_THREADS)
+}
+
+/// How many CPU threads the engine should ask for on **this** machine.
+///
+/// **Not the runtime's own default, and that is the point.** `transcribe-cpp` defaults to the
+/// number of CPUs the process may run on *capped at eight* —
+/// `src/transcribe-batch-util.h`, `default_n_threads(int cap = 8)` — and above eight hardware
+/// threads the rest of the machine sits idle. Measured on a 14-core, 20-thread i9-13900H
+/// against the committed two-second probe clip, three runs each, on battery under the
+/// `powersave` governor:
+///
+/// | threads | median | real-time factor against the 30 s window |
+/// |---|---|---|
+/// | `0` (the runtime's own) | 28.3 s | 0.94 |
+/// | 8 | 28.3 s | 0.94 |
+/// | 10 | 23.1 s | 0.77 |
+/// | 14 (the physical cores) | 17.5 s | 0.58 |
+/// | 20 (every hardware thread) | **15.0 s** | **0.50** |
+/// | 32 | 25.7 s | 0.86 |
+///
+/// `0` and `8` agreeing to within a tenth of a second is the cap being *observed* rather than
+/// read out of a header, and the twenty-thread row is why this asks for logical parallelism
+/// rather than physical cores: the eight extra hyperthreads were worth another 14 % on top of
+/// the fourteen physical ones, which is small but is the right sign — and reading physical
+/// core counts needs a different piece of platform code on every platform for a number that
+/// measured *worse*.
+///
+/// `docs/BUILDING.md` carries the same table for somebody deciding whether to trust it.
+#[must_use]
+pub fn default_threads() -> u32 {
+    threads_for(std::thread::available_parallelism().ok())
+}
+
 /// Which device the model runs on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Compute {
@@ -211,27 +277,26 @@ impl Model {
         self.inner.backend()
     }
 
-    /// Open a session on this model with the runtime's own thread policy.
+    /// Open a session on this model at [`default_threads`] for this machine.
+    ///
+    /// The CPU tier's answer. A caller that has a device to think about — the engine host is
+    /// the only one — decides for itself with [`Model::engine_with_threads`].
     pub fn engine(&self) -> Result<Engine, Error> {
-        self.engine_with_threads(0)
+        self.engine_with_threads(default_threads())
     }
 
     /// Open a session on this model, choosing how many CPU threads it may use.
     ///
-    /// `0` leaves the decision to the runtime, which is the right answer on the Vulkan tier —
-    /// almost nothing runs on the CPU there. It is a knob at all because the CPU fallback tier
-    /// is the one place where the number matters, and because the engine host takes it from
-    /// the wire rather than deciding for itself.
+    /// `0` leaves the decision to the runtime, and the runtime's decision is **not** "as many
+    /// as this machine has": `transcribe-cpp` takes the number of CPUs the process may run on
+    /// *capped at eight* (`src/transcribe-batch-util.h`, `default_n_threads(int cap = 8)`), so
+    /// above eight hardware threads the rest of the machine sits idle. [`default_threads`]
+    /// carries the measurement and is what every caller in this workspace passes on the CPU
+    /// tier.
     ///
-    /// **`0` is not "as many as this machine has".** `transcribe-cpp`'s default is the number
-    /// of CPUs the process may run on *capped at eight*
-    /// (`src/transcribe-batch-util.h`, `default_n_threads(int cap = 8)`), so a machine with
-    /// more than eight hardware threads leaves the rest of them idle. Measured on a 14-core,
-    /// 20-thread i9-13900H against a 30-second clip: 28.2 s at `0`, 14.2 s at `20` — twice
-    /// the speed, which on the CPU tier is the difference between a real-time factor of 0.94
-    /// and one of 0.47. Nothing here passes anything but `0` yet; that is a decision about
-    /// the product's fallback tier on every platform rather than a Linux one, and
-    /// `docs/BUILDING.md` carries the measurement to make it with.
+    /// `0` is still the right thing to pass on the Vulkan tier, where almost nothing runs on
+    /// the CPU and where the number above was never measured. The engine host is where those
+    /// two sentences meet, because it is the only place that knows which device was asked for.
     pub fn engine_with_threads(&self, threads: u32) -> Result<Engine, Error> {
         let options = SessionOptions {
             // Saturating rather than wrapping: a thread count that arrived as nonsense
@@ -315,8 +380,60 @@ fn run_options(language: &str, prompt: Option<&str>) -> RunOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compute, Error, SAMPLE_RATE, run_options};
+    use super::{
+        Compute, Error, MAX_THREADS, SAMPLE_RATE, default_threads, run_options, threads_for,
+    };
+    use std::num::NonZeroUsize;
     use transcribe_cpp::{RunExtension, TimestampKind};
+
+    /// `available` as the policy takes it, for a machine of that size.
+    fn machine(threads: usize) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(threads)
+    }
+
+    #[test]
+    fn the_default_is_the_whole_machine_up_to_the_ceiling() {
+        // The number that matters: every hardware thread, not the runtime's eight. This is
+        // the row the measurement in `default_threads` was taken on.
+        assert_eq!(threads_for(machine(20)), 20);
+        assert_eq!(threads_for(machine(14)), 14);
+        assert_eq!(threads_for(machine(8)), 8);
+        // A machine smaller than the runtime's own cap is not talked up to it.
+        assert_eq!(threads_for(machine(4)), 4);
+        assert_eq!(threads_for(machine(1)), 1);
+    }
+
+    #[test]
+    fn a_machine_bigger_than_the_ceiling_stops_at_it() {
+        // Thirty-two threads on a twenty-thread machine measured *slower* than the capped
+        // default, so nothing here may ever ask for more than the machine has — and on a
+        // machine that has more than this, the gain had already gone sublinear.
+        assert_eq!(threads_for(machine(64)), MAX_THREADS);
+        assert_eq!(threads_for(machine(128)), MAX_THREADS);
+        assert_eq!(threads_for(machine(usize::MAX)), MAX_THREADS);
+    }
+
+    #[test]
+    fn a_machine_that_will_not_say_gets_the_runtimes_own_answer() {
+        // Not a guess. `0` is the wire and runtime spelling of "you decide", and in the one
+        // case where nothing is known that is better than a number made up here.
+        assert_eq!(threads_for(None), 0);
+    }
+
+    #[test]
+    fn this_machine_gets_a_number_it_can_actually_run() {
+        let threads = default_threads();
+        assert!(
+            threads <= MAX_THREADS,
+            "the ceiling is not a suggestion: {threads}"
+        );
+        // A runner that reports its parallelism must never be told to leave it idle, which
+        // is the whole bug this policy exists to fix.
+        if let Ok(available) = std::thread::available_parallelism() {
+            assert_eq!(u64::from(threads), available.get().min(32) as u64);
+            assert!(threads >= 1);
+        }
+    }
 
     #[test]
     fn cpu_is_the_default_and_the_gpu_is_a_build_time_decision() {
