@@ -182,6 +182,11 @@ fn main() {
             // application is closing, and to the settings window's engine group.
             app.manage(engine.clone());
 
+            // **Debug builds only**, and the whole product loop's only way in from a script.
+            // See the switch at the end of this function.
+            #[cfg(debug_assertions)]
+            let dictating = engine.clone();
+
             // The four changes nobody else owns: the language, the trigger the tooltip names,
             // the autostart switch and the tier. The session owns the hook and the
             // microphone, and the engine supervisor reads the strictness and the dictionary
@@ -226,6 +231,28 @@ fn main() {
                 && !state.trim().is_empty()
             {
                 panel::debug_open(&review, state.trim());
+            }
+
+            // **Debug builds only.** The one step of the loop a script cannot reach is the
+            // first one: a person holding a key down and speaking. `DILE_DICTATE_PROBE=1`
+            // hands the engine the committed probe clip as though somebody just had — through
+            // the same queue the microphone submits to, so the transcription, the Turkish
+            // cleanup, the panel and the hand-over that follows are every bit the real ones.
+            // It is how the loop gets checked end to end on a machine nobody is sitting at,
+            // and on Linux it is how the clipboard hand-over was checked at all, because the
+            // trigger there is an evdev key that cannot be synthesised from the process that
+            // is listening for it.
+            #[cfg(debug_assertions)]
+            if std::env::var("DILE_DICTATE_PROBE").is_ok_and(|value| value == "1") {
+                log::warn!(
+                    "DILE_DICTATE_PROBE=1: handing the probe clip to the engine as though it had just been spoken"
+                );
+                match engine::probe::samples() {
+                    Ok(samples) => dictating.submit(samples),
+                    Err(error) => {
+                        log::error!("the probe clip could not be dictated: {error}");
+                    }
+                }
             }
 
             #[cfg(debug_assertions)]

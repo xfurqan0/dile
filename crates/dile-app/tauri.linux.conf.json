@@ -1,5 +1,23 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "panel",
+        "title": "Dile",
+        "width": 708,
+        "height": 92,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "transparent": true,
+        "visible": false,
+        "focus": false,
+        "center": false
+      }
+    ]
+  },
   "bundle": {
     "targets": ["deb", "rpm"]
   }

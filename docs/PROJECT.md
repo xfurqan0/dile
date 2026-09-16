@@ -4,6 +4,8 @@ Internal project notes. Kept in English so the repo is readable by everyone.
 
 > **Dile: hold a key, speak, let go. Turkish-first local dictation.**
 > Local, open-source, push-to-talk dictation. Windows first, macOS and Linux later from the same codebase. Audio never leaves the machine.
+>
+> Linux is a preview, and one respect makes it a different product: it hands a dictation over on the clipboard rather than pasting it. §9 is why.
 
 - Repo: `github.com/xfurqan0/dile` · License: MIT
 - Name: **Dile** (Turkish "dile getir", to put into words; "dil", language). Maintainer decision 2026-09-07.
@@ -163,6 +165,7 @@ All of the following were open questions in the first draft of this file. They a
 WP0 already settled the build question: a GPU build needs the Vulkan SDK on the build machine and nothing else. WP7 added the second half of that answer — the Vulkan SDK is now pinned and installed on the release runner too, so the binary that ships is built from a commit by a machine rather than from a laptop.
 
 ## 8. Log
+- 2026-09-16 — **Linux hands a dictation over on the clipboard, and the flag it cannot have is what makes that work.** D-WP-L3. §9 is the decision; this is what measuring it turned up. Two routes to the selection were tried before either was written: `arboard` — which is what `tauri-plugin-clipboard-manager` is — wrote it with **no window and no focus at all**, because it goes through XWayland and GNOME bridges the two selections; `gtk::Clipboard`, on the connection this process already has, wrote it only while a window of ours held the keyboard, and **with no window at all it failed silently**. The second was chosen anyway: `arboard` is six crates and a compatibility layer a session can be running without, and it cannot do a delayed render — the mechanism §3's paste row is built on, and already the reason it was turned down for Windows. GTK cost **zero crates**, because Tauri's Linux backend is GTK3 and all four of `gtk`, `gdk`, `gio` and `glib` were already linked. **The trap that shaped the code:** an unfocused write returns normally, logs nothing and changes nothing — *and `wait_for_text` still returns the text*, because GDK answers a read from its own local owner without asking the compositor. A check that passes when the thing failed is worse than no check, so the write waits for the compositor's own `owner-change` instead, which was measured to arrive on a write that landed and never on one that did not. Both halves were then checked against the real application: with the subscription taken out, a build reported the refusal on a machine where the write had in fact succeeded. **`focusable: false` has no Wayland equivalent, and that stopped being only a loss:** a client may set the selection only while it holds the keyboard, so the card taking the focus — which on Windows would be the bug — is what lets it hand a dictation over at all. The wire says it in one line: `wl_keyboard.enter(12643, …)` on the panel surface, then `wl_data_device.set_selection(wl_data_source#50, 12643)` with the same serial. **`DILE_DICTATE_PROBE=1` is how any of this was checked**, and it is worth more than this package: it hands `assets/probe.wav` to the engine through the queue the microphone submits to, so the transcription, the Turkish cleanup, the panel and the hand-over are the real path with only the key press skipped — on Linux the *only* way, because the trigger is an exclusive grab on an evdev device and the process listening for the key is the one process that cannot synthesise it. End to end on this laptop: probe clip → 8.1 s on the CPU tier → `Bugün hava çok güzel ve deniz sakin.` → `wl-paste` reads it back. **And the tray's silence got a voice.** GNOME hosts no `StatusNotifierItem`, so the icon registers, returns no error and appears nowhere; the application now asks the bus for an owner of `org.kde.StatusNotifierWatcher` five seconds after start and sends one notification when there is none. The two `Gtk-CRITICAL` lines a debug console shows there turn out to be the same fault: a backtrace puts them in `libappindicator3` falling back on a timer to `GtkStatusIcon`, the legacy X11 tray GTK3 does not implement under Wayland.
 - 2026-09-16 — **The CPU tier was running at half speed on every machine with more than eight threads, and the fix is one function.** `transcribe-cpp` defaults `n_threads` to the CPUs the process may use *capped at eight* (`src/transcribe-batch-util.h`, `default_n_threads(int cap = 8)`), and every caller in this workspace sent `0`, which is how that cap gets asked for. The cap was **observed rather than read**: on a 14-core, 20-thread i9-13900H, `threads: 0` and `threads: 8` transcribe the committed probe clip in the same 28.3 s to within a tenth of a second. `dile_engine::default_threads` now asks for every hardware thread the machine reports, capped at `MAX_THREADS` = 32, and `dile-engine-host` resolves a `0` request to it. **Measured end to end through the wire the application uses: 28.3 s → 14.2 s, a real-time factor of 0.94 → 0.48, with a byte-identical transcript.** Three rows of the measurement decided the policy and all three are in `docs/BUILDING.md`: **logical, not physical** — the eight hyperthreads on top of the fourteen physical cores were worth another 14 %, and a physical core count needs different platform code on every platform for a number that measured worse (17.5 s against 15.0 s); **never more than the machine has** — 32 threads on a 20-thread machine measured 25.7 s, slower than the runtime's own cap, so oversubscription gives the win straight back and the ceiling exists for the far end of the range, where the gain was already sublinear at twenty; and **the Vulkan tier keeps its `0`**, because almost nothing runs on the CPU there and none of this was measured on it — which is the only reason the resolution is device-aware rather than a constant. This is a Windows change as much as a Linux one: the fallback tier is the same code on both, and a Windows machine whose GPU probe failed was paying the same double. The policy is a pure function of one number, so it is tested on a runner whose core count is nothing like a laptop's.
 - 2026-09-15 — **The trigger is one key, and it is the right Ctrl.** The chord and the optional `second_key` switch beside it are one setting now, with two shapes — a lone modifier or a chord — and the shipped default moved from `Ctrl+Alt+Space` to `RightCtrl`, because the hand test of the 0.1.0 installer on 2026-09-14 found what §3 had only recommended: a hand rests on a lone modifier for a whole sentence where a three-key chord tires it inside a minute. It cost one settings migration and no version number — `hotkey.trigger` replaces `hotkey.chord` and `hotkey.second_key`, a file from the previous build is resolved as it is read (`second_key: true` means that key already *was* this person's trigger, so it becomes `RightCtrl`; otherwise the chord carries over; a file that already has `trigger` wins) and the old keys drop on the first save — and because that is readable off the document rather than off a number, **`version` stays 1**. **The swallow rule did not change**, it only belongs to the trigger rather than to a second setting: a chord is blocked while the hook is installed and a lone modifier never is, so `Right Ctrl` + `C` still copies and the recording a press started is withdrawn the moment another key joins the hold.
 - 2026-09-14 00:35 — **WP7 is prepared: the product is packaged, and the release is the maintainer's to take.** `b18f7fb`…, over five commits. Everything one-way — the tag, publishing the draft, the winget pull request — is on `docs/RELEASE.md` and in nobody's workflow. What the package taught, in the order it was learnt:
@@ -310,3 +313,87 @@ WP0 already settled the build question: a GPU build needs the Vulkan SDK on the 
   **CI has not run once, and the reason is not the code.** Actions was unavailable on this private repository, so both jobs were rejected before a runner started; a re-run behaved identically, and nothing in the repository can change it. **So `.github/workflows/ci.yml` is unverified by a real run**, and WP0's acceptance criterion is not met yet even though every step in that file passes on the maintainer's machine. CI on the private repository is gated locally by `scripts/ci-local.ps1` until the repository is public: it runs the same steps in the same order against a fresh clone of `HEAD`, which is the closest thing to a runner that exists here.
 
   Not decided and left for WP2: the tray icon is the application icon and a placeholder — a waveform mark drawn to have something the right shape in the tray; the state icon (idle / recording / working) is WP2's, and so is the hotkey the tooltip currently names as a constant.
+
+
+## 9. Linux (preview): what a dictation does there, and why it is not a paste
+
+Windows is still what ships (§2). This is the product decision Linux forced, taken 2026-09-16
+with D-WP-L3, and it is here rather than in `docs/BUILDING.md` because it is a decision about
+what Dile *is* on that platform rather than a note about how it is built.
+
+### The decision: clipboard-first
+
+**A finished dictation goes on the clipboard and the card says so** — *copied — press Ctrl+V
+to paste* — and nothing is pasted anywhere. `platform::DELIVERY` is that decision in one
+constant, `Delivery::Clipboard` against Windows' `Delivery::Paste`, and both of the panel's
+paths are ordinary code, compiled and tested on both platforms.
+
+It is not a degraded paste. §3's paste row rests on a promise: the target window is captured
+when the recording starts and checked again when the text is ready, and a window that has gone
+takes the paste with it. **A Wayland client is never told which window has the focus** — a
+deliberate part of the protocol rather than a gap in it — so on Linux that promise cannot be
+made, and a paste would put a sentence into whatever happened to be in front. Synthesising
+`Ctrl+V` is the easy half and is within reach already: the trigger asks for `/dev/uinput`
+anyway, so the chord costs no permission that has not been asked for. **Aiming it is the half
+that does not exist.** A smaller promise that is kept beats a larger one that is not.
+
+### What that costs, in full
+
+The five limits of the feasibility work of 2026-09-15, every one of them measured on GNOME
+50.4 Wayland rather than read:
+
+1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
+   for the terminal family, and no "that window is gone, so I did not paste" guarantee.
+2. **The card lands where the compositor puts it.** `xdg-shell` has no global coordinate
+   space, and `zwlr_layer_shell_v1` — how a HUD is placed elsewhere — GNOME does not advertise
+   at all. The per-monitor drag memory is dead weight on this platform, not a feature.
+3. **The card cannot refuse the focus.** `focusable: false` has no Wayland equivalent, so the
+   card takes the keyboard from whatever you were typing in. **And that is what makes the
+   clipboard work**: a client may set the selection only while it holds the keyboard, so the
+   flag Dile cannot have here is the one that lets the card hand a dictation over at all. The
+   application logs both halves of that trade in one line at start-up.
+4. **The trigger needs a permission.** One udev rule, and `docs/BUILDING.md` says exactly what
+   it grants.
+5. **The tray icon needs an extension on GNOME.** Without one the icon is registered
+   successfully and appears nowhere, so the application asks the session bus and says so
+   itself, once, in a notification.
+
+Out of scope for a v1 there, by the same decision: automatic paste, the target label, the
+terminal chord, clipboard restore — there is nothing to restore, because a copy the user asked
+for is a copy they keep — and pixel-accurate placement.
+
+### How the clipboard is reached, and why not through a crate
+
+`gtk::Clipboard`, on the connection this process already holds. The alternative was
+`tauri-plugin-clipboard-manager`, which is `arboard`: six more crates, and it reaches the
+selection through **XWayland** rather than Wayland, so a session without it has no clipboard
+and nothing says so. `arboard` also cannot do a delayed render, which is the mechanism §3's
+paste row is built on and the reason it was turned down for Windows in the first place; GTK
+can, which is what the package that builds the Linux paste will need. Naming `gtk`, `gdk`,
+`gio` and `glib` in the manifest added **no crate at all** to the graph — Tauri's Linux
+backend is GTK3, so all four were already compiled into the binary, and `Cargo.lock` gained
+four lines and no package.
+
+Two measurements decided the shape of the write, and both are written down in
+`crates/dile-app/src/platform/linux.rs`:
+
+* **An unfocused write silently does nothing.** `set_text` returns, logs nothing, and the
+  selection never changes.
+* **`wait_for_text` cannot be used to check it.** GDK answers a read from its own local owner
+  without asking the compositor, so it returns the text that was thrown away. What does work
+  is the compositor's `owner-change`: it arrives on a write that landed and never on one that
+  did not. So the write is followed by a wait for it, and a dictation that could not be handed
+  over leaves the card up with the text still in it and the countdown stopped — losing a
+  dictation is the one outcome this application never accepts.
+
+A third measurement is a promise to the user rather than a mechanism: **the selection belongs
+to the connection, not to the window**, so hiding the card does not take the text back — but
+it does not survive *Quit*, on a desktop with no clipboard manager running.
+
+### The window flags Wayland has no answer for
+
+`tauri.linux.conf.json` restates the panel window without `alwaysOnTop`, `focusable`,
+`skipTaskbar` and `shadow`. All four are silently ignored there — the first two have no
+`xdg-shell` request, `focusable` is limit 3 above, and `shadow` is a Windows and macOS setting
+— and a configuration file that asks for four things it will not get reads like a build that
+does not know. `tauri.conf.json` is untouched, so Windows is byte for byte what it was.

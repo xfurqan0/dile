@@ -184,7 +184,157 @@ pub fn create(app: &App, strings: &Strings, hotkey: &str) -> tauri::Result<()> {
         })
         .build(app)?;
 
+    #[cfg(target_os = "linux")]
+    indicator::say_if_nothing_will_show_it(strings);
+
     Ok(())
+}
+
+/// Whether this desktop will show a tray icon at all, and one sentence when it will not.
+///
+/// **The only silent failure in this application.** A tray icon on Linux is a
+/// `StatusNotifierItem` registered over D-Bus with whatever is willing to host one; GNOME 49
+/// and 50 host none, and have said they do not intend to. What happens then is that
+/// registration succeeds, no error is returned anywhere, and the icon simply never appears —
+/// which for an application whose only permanent surface *is* the tray is the difference
+/// between "running" and "gone". `docs/PROJECT.md`'s Linux section and `README.md` both say
+/// the extension is required; this says it again at the moment it is true, to the person it
+/// is true for.
+///
+/// **Once, and never fatal.** One notification per run, on a thread of its own, after a grace
+/// period — a session that starts Dile at login may still be bringing its shell extensions up.
+/// Every failure along the way is a log line: an application that could not ask whether it is
+/// visible is still an application that records and transcribes.
+///
+/// The approach is nazar-tray's (`3ec3cb0`), which faced the same silence; the code is this
+/// application's own, and the question it asks is a plain `NameHasOwner` rather than that
+/// project's watcher wrapper.
+#[cfg(target_os = "linux")]
+mod indicator {
+    use std::time::Duration;
+
+    use gtk::gio;
+    use gtk::glib::{self, ToVariant};
+
+    use crate::i18n::Strings;
+
+    /// The two bus names a tray host takes. Either one means somewhere for the icon to go.
+    ///
+    /// The KDE spelling is the one the specification settled on and the one the GNOME
+    /// extension registers; the freedesktop spelling is what a few hosts took first and it
+    /// costs one more call to accept.
+    const WATCHERS: [&str; 2] = [
+        "org.kde.StatusNotifierWatcher",
+        "org.freedesktop.StatusNotifierWatcher",
+    ];
+
+    /// How long to let the desktop finish starting before asking.
+    ///
+    /// Autostart puts Dile up alongside the shell's own extensions rather than after them,
+    /// and a notification that told somebody their tray was broken a second before it started
+    /// working would be worse than saying nothing.
+    const GRACE: Duration = Duration::from_secs(5);
+
+    /// How long a D-Bus question may take before it is treated as unanswerable.
+    const CALL_TIMEOUT_MS: i32 = 2_000;
+
+    /// How long the notification stays up: the desktop's own default.
+    const NOTIFICATION_TIMEOUT_MS: i32 = -1;
+
+    /// Ask once, in the background, and say it once if the answer is no.
+    pub fn say_if_nothing_will_show_it(strings: &Strings) {
+        let title = strings.text("tray.notice.noindicator.title");
+        let body = strings.text("tray.notice.noindicator.body");
+
+        let spawned = std::thread::Builder::new()
+            .name("dile-tray-host".to_owned())
+            .spawn(move || {
+                std::thread::sleep(GRACE);
+                match host_present() {
+                    Ok(true) => log::info!(
+                        "a status notifier watcher is running, so the tray icon has somewhere to appear"
+                    ),
+                    Ok(false) => {
+                        log::warn!(
+                            "no status notifier watcher is running: this desktop shows no tray icon and reports no error, so the application is saying so itself"
+                        );
+                        notify(&title, &body);
+                    }
+                    Err(error) => log::warn!(
+                        "whether the tray icon will appear could not be established: {error}"
+                    ),
+                }
+            });
+        if let Err(error) = spawned {
+            log::warn!("the tray host check could not be started: {error}");
+        }
+    }
+
+    /// Whether anything on the session bus is hosting tray icons.
+    fn host_present() -> Result<bool, glib::Error> {
+        let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
+        let answer = glib::VariantTy::new("(b)").ok();
+
+        for name in WATCHERS {
+            let reply = bus.call_sync(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                Some(&glib::Variant::tuple_from_iter([name.to_variant()])),
+                answer,
+                gio::DBusCallFlags::NONE,
+                CALL_TIMEOUT_MS,
+                gio::Cancellable::NONE,
+            )?;
+            if reply.child_value(0).get::<bool>().unwrap_or(false) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// One desktop notification, through the session bus this process already talks on.
+    ///
+    /// Raw `org.freedesktop.Notifications` rather than a notification plugin: the plugin
+    /// would be a dependency, a permission and a JavaScript API for the one sentence this
+    /// application has ever needed to say outside its own windows.
+    fn notify(title: &str, body: &str) {
+        let bus = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+            Ok(bus) => bus,
+            Err(error) => {
+                log::warn!("there is no session bus to send a notification on: {error}");
+                return;
+            }
+        };
+
+        let call = bus.call_sync(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "Notify",
+            Some(&glib::Variant::tuple_from_iter([
+                "Dile".to_variant(),
+                // Replaces nothing: there is only ever one of these per run.
+                0u32.to_variant(),
+                // The desktop file's name, so the notification wears the application's icon
+                // if the icon theme has it and nothing at all if it does not.
+                "io.github.xfurqan0.dile".to_variant(),
+                title.to_variant(),
+                body.to_variant(),
+                Vec::<String>::new().to_variant(),
+                glib::VariantDict::new(None).end(),
+                NOTIFICATION_TIMEOUT_MS.to_variant(),
+            ])),
+            None,
+            gio::DBusCallFlags::NONE,
+            CALL_TIMEOUT_MS,
+            gio::Cancellable::NONE,
+        );
+        if let Err(error) = call {
+            log::warn!("the tray notice could not be shown: {error}");
+        }
+    }
 }
 
 /// The two entries, in the language of the moment.

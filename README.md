@@ -228,12 +228,24 @@ inside the application.
 
 ## Known limits
 
-- **Windows is what ships.** There is no Linux release. The workspace builds and tests
-  there and the trigger, the microphone and the engine all work, but placing the card on
-  a screen, naming the application you are dictating into and pasting the text do not —
-  a Wayland client cannot be told which window has the focus or put a window at a
-  coordinate. `docs/BUILDING.md`, "Building on Linux", is the honest table. macOS comes
-  from the same codebase later.
+- **Windows is what ships. Linux is a preview, and it works differently on purpose.** There
+  is no Linux release yet; what there is, is a build you can run from source, and on it the
+  trigger, the microphone, the engine and the Turkish layer all work. **A dictation goes on
+  the clipboard rather than into what you are typing in** — the card says *copied — press
+  Ctrl+V to paste*, and you press it. That is not a missing feature waiting for a version:
+  a Wayland client is never told which window has the focus, so Dile cannot promise to put a
+  sentence in the right place, and it will not paste into the wrong one instead. Three more
+  things follow from the same rule, and are worth knowing before you try it: **the card lands
+  where the compositor puts it** rather than top-centre, **it takes the keyboard** while it is
+  up, and **the target application is not named** on it. The tray icon needs the AppIndicator
+  extension on GNOME, and the trigger needs one udev rule; the application says so itself if
+  either is missing. `docs/PROJECT.md` §9 is the whole of the reasoning and
+  `docs/BUILDING.md`, "Building on Linux", is how to build it. macOS comes from the same
+  codebase later.
+- **On Linux, quitting Dile can take the clipboard with it.** A Wayland selection belongs to
+  the program that set it, so a dictation you copied and have not pasted goes when Dile does —
+  unless a clipboard manager took a copy, which most desktops have and GNOME does not by
+  default. Paste it before you quit.
 - Dictation, not transcription. Recording is capped at 60 s by default and 300 s at most;
   meeting recordings, file batches and subtitle files are deliberately out of scope.
 - The CPU fallback tier is slower than real time. It is a fallback, not a mode to choose.

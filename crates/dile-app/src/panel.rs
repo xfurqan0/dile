@@ -64,7 +64,7 @@ use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WindowEvent};
 
 use crate::paste::{Outcome, Paster};
-use crate::platform::{Hwnd, Monitor, window};
+use crate::platform::{self, Delivery, Hwnd, Monitor, window};
 use crate::settings::{PanelPosition, SettingsStore};
 use crate::ui::Ui;
 
@@ -203,9 +203,16 @@ impl Panel {
         let paster = match Paster::start() {
             Ok(paster) => Some(paster),
             Err(error) => {
-                log::error!(
-                    "the clipboard could not be started, so nothing can be pasted: {error}"
-                );
+                match platform::DELIVERY {
+                    Delivery::Paste => log::error!(
+                        "the clipboard could not be started, so nothing can be pasted: {error}"
+                    ),
+                    // Worse here than on Windows, and the log should say which: the clipboard
+                    // is not a step of the hand-over on this platform, it is the whole of it.
+                    Delivery::Clipboard => log::error!(
+                        "the clipboard could not be started, so a dictation can only be read in the panel and copied by hand: {error}"
+                    ),
+                }
                 None
             }
         };
@@ -395,6 +402,14 @@ impl Panel {
             return;
         }
 
+        // Where there is no window to aim at, the transfer *is* the hand-over: the text goes
+        // on the clipboard and the card says so, rather than being pasted into whatever
+        // happened to be in front. `platform::DELIVERY` is where that was decided and why.
+        if platform::DELIVERY == Delivery::Clipboard {
+            self.hand_over(&body);
+            return;
+        }
+
         let Some(target) = target else {
             self.report_target_gone();
             return;
@@ -424,6 +439,10 @@ impl Panel {
     ///
     /// Deliberately does **not** restore the previous clipboard afterwards: the user asked
     /// for their clipboard to hold this (`docs/PROJECT.md` §3).
+    ///
+    /// **Blocks, so never call it on the main thread**, for the reason [`Panel::transfer`]
+    /// gives and for one more on Linux: the clipboard there lives on the main loop, so a copy
+    /// that waited on it from the main loop would wait for itself.
     pub fn copy(&self, text: Option<String>) {
         let body = {
             let Ok(mut held) = self.held.lock() else {
@@ -445,6 +464,14 @@ impl Panel {
                 .unwrap_or_default()
         };
 
+        if platform::DELIVERY == Delivery::Clipboard {
+            // Copy and transfer are one action on a platform that hands over on the
+            // clipboard, and the card says the same thing after either of them. Closing is
+            // left to the card, which waits long enough for the sentence to be read.
+            self.hand_over(&body);
+            return;
+        }
+
         match self.paster.as_ref() {
             Some(paster) => match paster.copy(&body) {
                 Ok(()) => log::info!("the dictation was copied; the clipboard is not restored"),
@@ -454,6 +481,50 @@ impl Panel {
         }
         self.set_focusable(false);
         self.close();
+    }
+
+    /// Put the dictation on the clipboard and tell the card which of the two happened.
+    ///
+    /// The whole of the hand-over where [`Delivery::Clipboard`] is what this platform does.
+    /// **The card is left on screen either way**: after a success for as long as it takes to
+    /// read *press `Ctrl+V`*, and after a failure until the user takes the text out of it by
+    /// hand or presses Esc. A card that vanished on a clipboard that refused would lose the
+    /// dictation, which is the one outcome this application never accepts.
+    ///
+    /// **Blocks**, like everything else that touches a clipboard: see [`Panel::transfer`].
+    fn hand_over(&self, body: &str) {
+        let Some(paster) = self.paster.as_ref() else {
+            log::error!(
+                "there is no clipboard on this platform, so the dictation stays in the panel"
+            );
+            self.report_clipboard_failed();
+            return;
+        };
+
+        match paster.copy(body) {
+            Ok(()) => {
+                log::info!(
+                    "the dictation is on the clipboard; Ctrl+V puts it wherever the caret is"
+                );
+                self.ui.emit(
+                    EVENT_PANEL,
+                    PanelPayload {
+                        mode: "copied",
+                        hotkey: String::new(),
+                    },
+                );
+            }
+            Err(error) => {
+                log::error!("the dictation could not be put on the clipboard: {error}");
+                self.report_clipboard_failed();
+            }
+        }
+
+        // After the write rather than before it, and after either outcome. The card still has
+        // text on it that a person may want to select by hand, but it has no more typing to
+        // take — and on a platform where this flag means something, a card that stayed
+        // activatable would keep the caret it had borrowed.
+        self.set_focusable(false);
     }
 
     /// Close the panel and paste nothing at all.
@@ -738,6 +809,21 @@ impl Panel {
         );
     }
 
+    /// The clipboard refused, so the card keeps the text and the countdown stops.
+    ///
+    /// The same shape of answer as [`Panel::report_target_gone`] and for the same reason: a
+    /// dictation that could not be handed over is still a dictation, and the only place it
+    /// exists is the card in front of the user.
+    fn report_clipboard_failed(&self) {
+        self.ui.emit(
+            EVENT_PANEL,
+            PanelPayload {
+                mode: "clipboard-failed",
+                hotkey: String::new(),
+            },
+        );
+    }
+
     fn window(&self) -> Option<tauri::WebviewWindow> {
         self.app.get_webview_window(WINDOW)
     }
@@ -771,12 +857,23 @@ fn report_window_style(window: &tauri::WebviewWindow) {
 /// may take the focus is a different product from the one this module documents, and a
 /// person running it deserves to be told that at start-up rather than to work it out from a
 /// caret that stopped blinking.
+///
+/// **And on a clipboard-first platform it is also the reason the hand-over works at all.**
+/// A Wayland client may only set the selection while it has the keyboard, so the flag Dile
+/// cannot have here is the one that lets the card put a dictation on the clipboard — see
+/// `platform/linux.rs`. Both halves of that go in the same line, because a warning that only
+/// said the first half would read as a defect rather than as a trade.
 #[cfg(not(windows))]
 fn report_window_style(window: &tauri::WebviewWindow) {
     let _ = window;
-    log::warn!(
-        "panel window: this platform has no non-activating window style, so the card may take the focus from whatever you are typing in"
-    );
+    match platform::DELIVERY {
+        Delivery::Paste => log::warn!(
+            "panel window: this platform has no non-activating window style, so the card may take the focus from whatever you are typing in"
+        ),
+        Delivery::Clipboard => log::warn!(
+            "panel window: this platform has no non-activating window style, so the card takes the focus from whatever you are typing in — which is also what lets it put a dictation on the clipboard"
+        ),
+    }
 }
 
 /// The card's default place: centred on the work area, below the top edge.
@@ -996,9 +1093,20 @@ pub mod commands {
     }
 
     /// The copy button.
+    ///
+    /// On a thread of its own for the same reason [`panel_transfer`] is, and it became the
+    /// same reason only on Linux: Tauri runs a synchronous command **on the main loop**, and
+    /// on Linux that loop is the one the clipboard belongs to. A copy that waited there for a
+    /// clipboard whose answer arrives through that loop would be waiting for itself.
     #[tauri::command]
     pub fn panel_copy(text: Option<String>, panel: State<'_, Arc<Panel>>) {
-        panel.copy(text);
+        let panel = Arc::clone(&panel);
+        let spawned = std::thread::Builder::new()
+            .name("dile-copy".to_owned())
+            .spawn(move || panel.copy(text));
+        if let Err(error) = spawned {
+            log::error!("the copy thread could not be started: {error}");
+        }
     }
 
     /// ✗.

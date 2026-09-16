@@ -43,6 +43,11 @@ const FLOOR_DBFS = -60;
 const HINT_MS = 1000;
 const NOTHING_MS = 1200;
 
+/** How long "copied — press Ctrl+V" stays up before the card goes away, in milliseconds.
+    Longer than the other two: it is an instruction rather than an acknowledgement, and a
+    person who has just finished speaking has not been looking at the screen. */
+const COPIED_MS = 2600;
+
 /** How long the pointer has to rest on the text before the countdown gives up. */
 const HOVER_MS = 300;
 
@@ -277,6 +282,9 @@ function renderResult(payload) {
   text.textContent = cleanedText;
   target.textContent = payload.target_label ? t("panel.target", { app: payload.target_label }) : "";
   target.hidden = !payload.target_label;
+  // The corner is where "copied" and "the clipboard refused" land too, so a new dictation
+  // takes the colour off it rather than inheriting the last one's verdict.
+  delete target.dataset.state;
   card.removeAttribute("title");
   drawLevels(payload.strictness || context.strictness);
   startCountdown();
@@ -413,7 +421,7 @@ function onState(payload) {
   // Everything below only means something while the panel is already up. The resting state
   // is emitted every time a dictation ends, and a card that reappeared for it would be a card
   // that never went away.
-  if (mode === "closed" || mode === "result" || mode === "gone") {
+  if (mode === "closed" || mode === "result" || mode === "gone" || mode === "copied") {
     return;
   }
   // "live" is the panel saying it is open before any state has arrived; everything below is
@@ -466,6 +474,29 @@ function onPanel(payload) {
   } else if (payload.mode === "closed") {
     clearTimers();
     mode = "closed";
+  } else if (payload.mode === "copied") {
+    // The dictation is on the clipboard, which on this platform is the whole hand-over. The
+    // result layout does not move at all — the corner that would have said where the text was
+    // going says where it is instead, and the text stays selectable underneath it while the
+    // card is up, so a failure a moment later still leaves something to take by hand.
+    stopCountdown();
+    clearTimeout(closeTimer);
+    mode = "copied";
+    target.hidden = false;
+    target.dataset.state = "copied";
+    target.textContent = t("panel.state.copied");
+    closeLater(COPIED_MS);
+  } else if (payload.mode === "clipboard-failed") {
+    // The one outcome that must never take the dictation with it: the countdown stops, the
+    // card stays, and the hint says to take the text out by hand.
+    stopCountdown();
+    clearTimeout(closeTimer);
+    mode = "gone";
+    card.dataset.state = "gone";
+    card.title = t("panel.hint.clipboardfailed");
+    target.hidden = false;
+    target.dataset.state = "failed";
+    target.textContent = t("panel.state.clipboardfailed");
   } else if (payload.mode === "target-gone") {
     // The text is still there and still worth keeping, so the result layout stays exactly
     // as it was and only the label changes: the corner that said where this was going now

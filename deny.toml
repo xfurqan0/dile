@@ -63,6 +63,16 @@ yanked = "deny"
 # `quick-xml` 0.42 (RUSTSEC-2026-0194/0195), were taken that way and are deliberately absent
 # from this list. What is left is unmaintained-crate warnings with no fixed version to move
 # to, all of them dragged in by the Tauri tree.
+#
+# **One advisory this gate does not currently raise, written down so that green is not read as
+# absent.** RUSTSEC-2024-0429, unsoundness in `glib::VariantStrIter` fixed in glib 0.20: glib
+# 0.18.5 is linked into the Linux build and has been since before anything in this repository
+# named it, through `tray-icon` → `libappindicator` → `gtk` → `atk`. `cargo deny list` shows
+# the crate and `cargo deny check advisories` passes anyway, which is a property of how the
+# graph is walked rather than a judgement. It cannot be upgraded on its own — Tauri's whole
+# GTK stack is pinned to gtk-rs 0.18 — and the affected API iterates the strings of a variant,
+# which nothing in this workspace does: `src/platform/linux.rs` and `src/tray.rs` build
+# variants and read a boolean out of one. Revisit when Tauri moves to gtk-rs 0.20.
 ignore = [
     # Unmaintained, no safe upgrade. `proc-macro-error` reaches the build through Tauri's
     # macro crates; it runs at compile time only and ships nothing into the binary.

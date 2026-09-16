@@ -465,6 +465,7 @@ contain the code that reads them.**
 | `DILE_OPEN_SETTINGS=1` | opens the settings window at start-up, because nothing can click a tray menu from a script |
 | `DILE_OPEN_SETTINGS=<group>` | the same, on a chosen group: `hotkey`, `cleanup`, `engine`, `dictionary` or `general` |
 | `DILE_OPEN_PANEL=<state>` | renders the review panel with sample text: `recording`, `working`, `result` or `nothing` |
+| `DILE_DICTATE_PROBE=1` | hands the committed probe clip to the engine at start-up, as though somebody had just said it |
 
 `DILE_OPEN_PANEL` exists because there is no way to speak into a microphone from a script, so
 "does the result state still lay out at two lines" is otherwise a question nobody can answer
@@ -472,6 +473,22 @@ from a terminal. The card waits for the page to load, then stays up: a preview *
 count down and does not close itself**, and it deliberately does **not** arm the panel's three
 keys — a preview that swallowed Esc for the whole machine while somebody was photographing it
 would be a worse bug than the one it was helping to find.
+
+`DILE_DICTATE_PROBE` is the other half of the same problem and a larger answer to it. Where
+`DILE_OPEN_PANEL` draws a card with text written into the source, this one puts
+`assets/probe.wav` **through the queue the microphone submits to** — so the transcription, the
+Turkish cleanup, the panel and whatever the panel does with the result afterwards are every
+one of them the real path, and the only step that is skipped is a person holding a key down.
+It is how the whole loop is checked on a machine nobody is sitting at:
+
+```bash
+RUST_LOG=info DILE_DICTATE_PROBE=1 ./target/debug/dile-app
+wl-paste     # on Linux, a few seconds later: Bugün hava çok güzel ve deniz sakin.
+```
+
+On Linux it is the *only* way to check the hand-over, and for a reason worth knowing: the
+trigger there is an exclusive grab on an evdev device, so the process listening for the key is
+the one process on the machine that cannot synthesise it.
 
 `DILE_MODEL_DIR` is how a machine that already holds these weights avoids downloading a
 second copy. The tier decision lives in `%APPDATA%\io.github.xfurqan0.dile\engine.json`;
@@ -538,12 +555,14 @@ Concretely:
 | The trigger, hold-to-talk, right Ctrl | works, once one udev rule is installed — see below |
 | Microphone, pre-roll, VAD, 16 kHz | works, through ALSA — which is also how cpal reaches PipeWire |
 | The engine, `dile transcribe`, model download | works, on the CPU tier, with a floor — measured below |
-| Tray icon and menu | works, and on GNOME needs the AppIndicator extension |
+| Tray icon and menu | works, and on GNOME needs the AppIndicator extension — the application now says so itself when nothing is hosting one |
+| The clipboard | works, and it is how a dictation is handed over here: the card says *copied — press Ctrl+V to paste* |
 | Placing the card on a screen | **no** — `xdg-shell` has no global coordinate space |
 | Naming the target application | **no** — a Wayland client is not told what has the focus |
-| Clipboard and automatic paste | **no** — the text stays in the card to be taken by hand |
+| Automatic paste | **no** — the text is on the clipboard and the person presses `Ctrl+V` |
 
 The application says each of those in the log at start-up rather than failing quietly.
+`docs/PROJECT.md` §9 is why the hand-over is shaped that way rather than as a paste.
 
 ### System packages
 
@@ -787,6 +806,26 @@ only answer:
 ```bash
 gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
 ```
+
+The application asks the session bus five seconds after start whether anything owns
+`org.kde.StatusNotifierWatcher`, and sends one desktop notification when nothing does. One per
+run, never fatal, and every step of it is a log line — an application that could not find out
+whether it is visible is still an application that records and transcribes.
+
+**The two `Gtk-CRITICAL` lines a debug console shows on GNOME are the same fault wearing a
+disguise**, and they are upstream rather than this repository's:
+
+```
+Gtk-CRITICAL **: gtk_widget_get_scale_factor: assertion 'GTK_IS_WIDGET (widget)' failed
+```
+
+A backtrace puts them in `libappindicator3`: with no watcher on the bus it falls back on a
+timer to `GtkStatusIcon`, which is the legacy X11 tray that GTK3 does not implement under
+Wayland, and its image update asks a non-widget for a scale factor. They stop when the
+extension is enabled, they are harmless when it is not, and they are why the notification
+above says in words what these say in glyphs. The successor library,
+`libayatana-appindicator3`, is the one the package list installs; the two conflict, and a
+machine with the old one installed is what these lines came off.
 
 ## Troubleshooting
 

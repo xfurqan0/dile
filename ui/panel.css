@@ -162,6 +162,17 @@ body {
   padding-top: 2px;
 }
 
+/* The corner says three different things depending on how a dictation ended, and the colour
+   is what tells them apart at a glance: where it went, that it is on the clipboard, or that
+   it is still only here. The card's own layout does not move for any of them. */
+.target[data-state="copied"] {
+  color: var(--p-green);
+}
+
+.target[data-state="failed"] {
+  color: var(--p-red);
+}
+
 /* --------------------------------------------------------------------- the level meter */
 
 .meter {

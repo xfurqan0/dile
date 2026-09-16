@@ -21,6 +21,7 @@ copyleft dependency in an MIT product is a rewrite, not a paperwork problem.
 | [`hound`](https://github.com/ruuda/hound) | Apache-2.0 | WAV reading, in the engine's smoke test only. Not linked into the shipped binary. |
 | [`handy-keys`](https://github.com/handy-computer/handy-keys) | MIT | The global trigger. On Windows a low-level keyboard hook; on Linux its own `evdev` backend, which is why the crate is linked on both. |
 | [`evdev`](https://crates.io/crates/evdev) | Apache-2.0 OR MIT | Linux builds only, and only through `handy-keys`: reading `/dev/input/event*` is how a trigger is seen without an X11 or a Wayland connection. |
+| [`gtk`](https://crates.io/crates/gtk), `gdk`, `gio`, `glib` (gtk-rs) | MIT | Linux builds only: the clipboard, and the one D-Bus question the tray asks. **Already inside the application before they were named** — Tauri's Linux backend is GTK3, so all four arrive through `tao` and `wry`; the manifest entries link the copies that are there and add no crate to the graph. |
 
 The full transitive list, with each crate's licence, is what `cargo deny check licenses`
 walks. Run it before adding a dependency, not after.

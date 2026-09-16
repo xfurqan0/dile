@@ -706,6 +706,7 @@ dependencies = [
  "dile-engine-proto",
  "dile-hotkey",
  "env_logger",
+ "gtk",
  "hound",
  "log",
  "serde",

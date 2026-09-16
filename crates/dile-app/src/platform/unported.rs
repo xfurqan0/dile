@@ -1,14 +1,15 @@
-//! The desktop on a platform Dile has not been ported to: four questions, four honest noes.
+//! The desktop questions a platform cannot answer: honest noes, and what each one costs.
 //!
-//! This module answers everything [`super::win32`] answers, and every answer is *no*. That is
-//! not a placeholder — it is the truth about a build that has no desktop integration written
-//! for it yet, and saying it plainly is what lets the rest of the application be honest in
-//! turn. The tray runs, the trigger runs, a dictation is recorded, transcribed and cleaned,
-//! and the card shows it. What does not happen is the last step: nothing is placed on a
-//! screen coordinate, nothing is put on the clipboard, and nothing is pasted anywhere.
+//! This module answers everything [`super::win32`] answers, and its answers are *no*. That is
+//! not a placeholder — it is the truth about a build with no desktop integration written for
+//! it yet, and saying it plainly is what lets the rest of the application be honest in turn.
+//! The tray runs, the trigger runs, a dictation is recorded, transcribed and cleaned, and the
+//! card shows it. What does not happen is the aiming: nothing is placed on a screen
+//! coordinate, and nothing is pasted anywhere.
 //!
-//! **Why a no rather than an approximation.** Each of these has a real answer on Linux and
-//! each one costs something a person has to decide about first:
+//! **On Linux three of these are permanent and the fourth is gone.** `super`'s table has the
+//! split: `super::linux` answers the clipboard there, and the three below stay, because they
+//! are the Wayland protocol's decisions rather than this application's backlog.
 //!
 //! * [`Hwnd::foreground`] — a Wayland client is not told which window has the focus, and that
 //!   is a deliberate part of the protocol rather than a gap in it. Without it there is no
@@ -16,15 +17,21 @@
 //!   is gone, so I did not paste" guarantee.
 //! * [`window::primary_monitor`] — `xdg-shell` has no global coordinate space, so a client
 //!   cannot ask where a display begins, nor put a window at a point on one.
-//! * [`Clipboard::start`] — the clipboard is reachable, but only by taking the keyboard focus
-//!   for the moment the selection is set, which is the one thing the panel promises never to
-//!   do.
+//! * [`window::send_paste_chord`] — a key press can be synthesised on Linux, through the same
+//!   `uinput` permission the trigger already asks for, and it would land in whatever window
+//!   happened to be in front rather than in the one the dictation was aimed at, because of the
+//!   first line of this list. That is a product decision before it is code, and
+//!   `super::DELIVERY` is where it was taken: this build hands a dictation over on the
+//!   clipboard and says so on the card.
+//! * `Clipboard::start` — no clipboard at all, on a platform nobody has written one for. The
+//!   Linux answer is `super::linux`, and it is the one question of the four that had a route.
 //!
 //! An approximation here would paste a sentence into whatever happened to be in front. A no
 //! leaves the text in the card where the user can read it and take it themselves, and says
 //! why in the log. `docs/BUILDING.md` carries the same sentences for the person running it.
 
 use std::path::PathBuf;
+#[cfg(not(target_os = "linux"))]
 use std::time::Duration;
 
 use super::screen::Monitor;
@@ -102,6 +109,9 @@ pub mod window {
 }
 
 /// What can go wrong with a clipboard.
+// Not compiled on Linux: `super::linux` answers this question there, so an unported
+// clipboard would be a type nothing constructs and nothing calls.
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
     /// There is no clipboard integration on this platform yet.
@@ -115,11 +125,17 @@ pub enum ClipboardError {
 ///
 /// Never handed out on this platform: [`Clipboard::start`] fails, so nothing reaches the
 /// point of making a promise.
+// Not compiled on Linux: `super::linux` answers this question there, so an unported
+// clipboard would be a type nothing constructs and nothing calls.
+#[cfg(not(target_os = "linux"))]
 #[derive(Clone, Debug)]
 pub struct Receipt {
     never: std::convert::Infallible,
 }
 
+// Not compiled on Linux: `super::linux` answers this question there, so an unported
+// clipboard would be a type nothing constructs and nothing calls.
+#[cfg(not(target_os = "linux"))]
 impl Receipt {
     /// Wait until the text is handed over, or until the deadline passes.
     #[must_use]
@@ -130,11 +146,17 @@ impl Receipt {
 }
 
 /// The clipboard, and the three things this application does with it.
+// Not compiled on Linux: `super::linux` answers this question there, so an unported
+// clipboard would be a type nothing constructs and nothing calls.
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug)]
 pub struct Clipboard {
     never: std::convert::Infallible,
 }
 
+// Not compiled on Linux: `super::linux` answers this question there, so an unported
+// clipboard would be a type nothing constructs and nothing calls.
+#[cfg(not(target_os = "linux"))]
 impl Clipboard {
     /// Start the clipboard agent.
     ///

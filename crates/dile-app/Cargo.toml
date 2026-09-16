@@ -67,6 +67,25 @@ sys-locale = "0.3.0"
 # it is applied from Rust rather than from the webview: see `capabilities/settings.json`.
 tauri-plugin-autostart = "2"
 
+# D-WP-L3: the clipboard, and the one D-Bus question the tray asks on Linux.
+#
+# **None of these add anything to the dependency graph.** Tauri's Linux backend is GTK3, so
+# `gtk`, `gdk`, `gio` and `glib` 0.18 are already compiled into this binary through `tao` and
+# `wry`; naming them here links the copies that are already there and `Cargo.lock` does not
+# move. The alternative was `tauri-plugin-clipboard-manager`, which is `arboard`, which is six
+# new crates reaching the selection through XWayland rather than through the Wayland
+# connection this process already holds — and which cannot do a delayed render, the mechanism
+# `docs/PROJECT.md` §3 built the paste path on. `src/platform/linux.rs` carries the
+# measurement the choice was made on.
+#
+# One entry rather than four: `gdk`, `gio` and `glib` are reached through `gtk::gdk`,
+# `gtk::gio` and `gtk::glib`, which are re-exports of the very crates `gtk` was built
+# against. Naming them separately would let a resolver pick a second version of each against
+# the one already inside `tao` — four more chances to link two GLibs into one process for no
+# gain at all.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 # WP5b: the paste. Four things have no safe wrapper anywhere in the Tauri stack — the
 # clipboard with a *delayed render* receipt, the foreground window and the program behind it,
 # the monitor that window is on, and a synthetic key chord — and all four are in `src/win32/`,
