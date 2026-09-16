@@ -41,6 +41,20 @@
 //! `settings.ui.panel_position`. Two screens, two habits, and the one the user is dictating
 //! on decides.
 //!
+//! ## How a card leaves the screen, and why that is a platform question
+//!
+//! On Windows the window is hidden and shown again, and the position above is this
+//! application's to keep. On Linux it is **minimized** and brought back by asking to be
+//! activated, because hiding it there destroys the `xdg_toplevel` — and a compositor that has
+//! to build a window again places it again, in the middle of the screen, however carefully the
+//! last one was dragged. The measurements are in [`platform::closing`]; the short version is
+//! that dragging was never broken on Wayland and closing was.
+//!
+//! The choice is a value rather than a `cfg`, like [`platform::DELIVERY`], so both paths
+//! compile and are tested on either kind of machine. It costs the card a place in the window
+//! switcher while it is down, which is written into the start-up log rather than left to be
+//! discovered.
+//!
 //! ## What the webview is told
 //!
 //! | Event | Carries |
@@ -64,7 +78,9 @@ use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WindowEvent};
 
 use crate::paste::{Outcome, Paster};
-use crate::platform::{self, AUTO_PASTE_FAILED, AutoPaste, Delivery, Hwnd, Monitor, window};
+use crate::platform::{
+    self, AUTO_PASTE_FAILED, AutoPaste, Closing, Delivery, Hwnd, Monitor, WindowSystem, window,
+};
 use crate::settings::{PanelPosition, SettingsStore};
 use crate::ui::Ui;
 
@@ -206,6 +222,16 @@ struct Held {
     /// preview that transferred itself after a second and a half would be a preview nobody
     /// could photograph — which is exactly what happened the first time one was tried.
     preview: bool,
+    /// Whether a card is on the screen right now.
+    ///
+    /// **Remembered rather than asked**, because the window cannot be asked once it is
+    /// minimized instead of unmapped. `is_visible()` stays true through a minimize — that is
+    /// what makes it the right question for *has this window ever been built* — and
+    /// `is_minimized()` is worse than useless on Wayland: GTK3 never raises its own
+    /// `ICONIFIED` state there, because the protocol has no event that says a window was
+    /// minimized, so `tao` reports `false` for a window that is minimized. Measured on GNOME
+    /// 50.4, and the reason the panel keeps this itself.
+    on_screen: bool,
 }
 
 /// The review panel.
@@ -231,6 +257,13 @@ pub struct Panel {
     /// it will read from the device at all (`platform::uinput`), and paying that on every
     /// dictation would make the first chord of each one the slow one.
     keyboard: Mutex<Option<AutoPaste>>,
+    /// What this process is talking to, which decides how a card leaves the screen and
+    /// whether a dragged position is worth writing down.
+    ///
+    /// Read once here rather than per call: GDK picks a backend when it opens the display and
+    /// never changes it, and a question with a fixed answer asked in a hot path is a question
+    /// asked in the wrong place.
+    system: WindowSystem,
     held: Mutex<Held>,
 }
 
@@ -255,6 +288,7 @@ impl Panel {
             }
         };
 
+        let system = WindowSystem::current();
         let panel = Arc::new(Panel {
             app: app.clone(),
             store,
@@ -262,6 +296,7 @@ impl Panel {
             remote: Mutex::new(None),
             paster,
             keyboard: Mutex::new(None),
+            system,
             held: Mutex::new(Held::default()),
         });
 
@@ -273,6 +308,7 @@ impl Panel {
                 }
             });
             report_window_style(&window);
+            report_closing(system);
         } else {
             log::error!("there is no panel window, so no dictation has anywhere to go");
         }
@@ -803,31 +839,89 @@ impl Panel {
         }
     }
 
-    /// Show the window, placing it first if it was hidden.
+    /// Put a card on the screen, the way this window system takes one back.
+    ///
+    /// Two different questions, and the second one is why the first is not `is_visible()`.
+    /// *Has this window ever been built* is what `is_visible()` answers, and the first card of
+    /// a run has to be mapped however it will later be closed. *Is a card up right now* is
+    /// [`Held::on_screen`], which the panel keeps itself because a minimized window answers
+    /// the first question yes and the second question no.
     fn show(&self) {
         let Some(window) = self.window() else { return };
 
-        let already = window.is_visible().unwrap_or(false);
-        if !already {
-            self.place(&window);
-            if let Err(error) = window.set_size(LogicalSize::new(WIDTH, BASE_HEIGHT)) {
-                log::warn!("the panel could not be sized: {error}");
+        if self.on_screen() {
+            return;
+        }
+        let built = window.is_visible().unwrap_or(false);
+
+        if built && platform::closing(self.system) == Closing::Minimize {
+            // Deliberately no `place()`: the window is still where the user left it, and the
+            // whole reason it was minimized rather than unmapped is that nobody has to put it
+            // back. `unminimize` alone is not enough under Wayland — the protocol has a
+            // request for minimizing and none for the other direction — so the window asks to
+            // be activated, which is `xdg_activation_v1` on the wire and what actually brings
+            // it up.
+            self.size_to_base(&window);
+            if let Err(error) = window.unminimize() {
+                log::warn!("the panel could not be unminimized: {error}");
             }
+            if let Err(error) = window.set_focus() {
+                log::warn!("the panel could not be raised: {error}");
+            }
+        } else {
+            // **Placed before it is sized, and that order is load-bearing on Windows.** A
+            // logical size is resolved against the scale factor of the display the window is
+            // on, so sizing a card that is still on the last monitor and then moving it to a
+            // monitor at a different DPI gives a card measured for the wrong screen.
+            self.place(&window);
+            self.size_to_base(&window);
             if let Err(error) = window.show() {
                 log::warn!("the panel could not be shown: {error}");
             }
-            self.arm_keys(true);
         }
+
+        self.set_on_screen(true);
+        self.arm_keys(true);
     }
 
-    /// Hide the window and give the three keys back to the machine.
+    /// Take the card off the screen and give the three keys back to the machine.
+    ///
+    /// On Windows the window is unmapped, which is what hidden has always meant. On Linux it
+    /// is minimized instead, and [`platform::closing`] carries the measurements that decided
+    /// that: unmapping there destroys the `xdg_toplevel`, and a compositor that has to build a
+    /// window again places it again — in the middle of the screen, whatever the user did with
+    /// the last one. Minimizing hands the keyboard back the same way unmapping does, which is
+    /// the property the clipboard hand-over needs, and it costs the card a place in the window
+    /// switcher while it is down.
     fn hide(&self) {
         self.arm_keys(false);
         self.persist_position();
-        if let Some(window) = self.window()
-            && let Err(error) = window.hide()
-        {
-            log::warn!("the panel could not be hidden: {error}");
+        self.set_on_screen(false);
+        let Some(window) = self.window() else { return };
+        let closed = match platform::closing(self.system) {
+            Closing::Unmap => window.hide(),
+            Closing::Minimize => window.minimize(),
+        };
+        if let Err(error) = closed {
+            log::warn!("the panel could not be closed: {error}");
+        }
+    }
+
+    /// Put the card back to the height every state but *result* uses.
+    fn size_to_base(&self, window: &tauri::WebviewWindow) {
+        if let Err(error) = window.set_size(LogicalSize::new(WIDTH, BASE_HEIGHT)) {
+            log::warn!("the panel could not be sized: {error}");
+        }
+    }
+
+    /// Whether a card is up right now.
+    fn on_screen(&self) -> bool {
+        self.held.lock().is_ok_and(|held| held.on_screen)
+    }
+
+    fn set_on_screen(&self, on_screen: bool) {
+        if let Ok(mut held) = self.held.lock() {
+            held.on_screen = on_screen;
         }
     }
 
@@ -871,7 +965,16 @@ impl Panel {
     }
 
     /// The user dragged the card. Remember where to, for this monitor.
+    ///
+    /// Only where the number means something. Under Wayland a `Moved` event carries GTK3's
+    /// answer to `gdk_window_get_position`, which is (0, 0) for every toplevel that ever
+    /// exists, so a memory here would fill the settings file with an origin nobody dragged to
+    /// — see [`platform::remembers_position`]. The card still comes back where it was left
+    /// there; the compositor is what remembers, not this file.
     fn remember(&self, x: i32, y: i32) {
+        if !platform::remembers_position(self.system) {
+            return;
+        }
         let moved = PanelPosition { x, y };
         if let Ok(mut held) = self.held.lock()
             && held.placed != Some(moved)
@@ -1025,6 +1128,25 @@ fn report_window_style(window: &tauri::WebviewWindow) {
         ),
         Delivery::Clipboard => log::warn!(
             "panel window: this platform has no non-activating window style, so the card takes the focus from whatever you are typing in — which is also what lets it put a dictation on the clipboard"
+        ),
+    }
+}
+
+/// Say how a card will leave the screen, and what that costs the person watching it.
+///
+/// A start-up line rather than a comment, for the same reason the window style gets one: what
+/// closing the panel does is visible behaviour, and the two ways of doing it differ in
+/// something a user can see. Somebody who finds a minimized *Dile* in the window switcher
+/// should be able to find the sentence that says why, in the log they already have.
+fn report_closing(system: WindowSystem) {
+    match platform::closing(system) {
+        Closing::Unmap => log::info!(
+            "panel window: window system {}, so a closed card is hidden and opens again where this application puts it",
+            system.label()
+        ),
+        Closing::Minimize => log::info!(
+            "panel window: window system {}, so a closed card is minimized rather than hidden and reopens where you dragged it — the costs are a minimized window in the switcher while it is closed, and a restart that starts the next one wherever the compositor likes",
+            system.label()
         ),
     }
 }

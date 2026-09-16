@@ -83,6 +83,35 @@ const RECEIPT_TICK: Duration = Duration::from_millis(25);
 /// the main loop was busy with when the job was posted.
 const MAIN_LOOP_DEADLINE: Duration = Duration::from_millis(2_500);
 
+/// Which backend GDK chose, asked of GDK rather than of the environment.
+///
+/// `WAYLAND_DISPLAY` and `XDG_SESSION_TYPE` describe the *session* and `GDK_BACKEND` describes
+/// a preference; none of the three is the answer. A session can be Wayland while this process
+/// talks X11 through XWayland, `GDK_BACKEND` can name a backend that failed to open, and all
+/// three can be set on a machine where GTK picked something else. The display connection
+/// knows, and it is the thing whose behaviour is being asked about.
+///
+/// The type name is what there is to read: telling the backends apart any other way means the
+/// `gdkwayland` or `gdkx11` crates, neither of which is in this tree and neither of which would
+/// earn its place for one string comparison. GTK3 is frozen, so the names are not moving
+/// targets. [`super::WindowSystem::named`] is what they mean.
+///
+/// Empty when there is no display, which is a real case rather than a defensive one: a
+/// `cargo test` process has none.
+///
+/// **And the check for one has to come first.** `gdk::Display::default()` does not answer
+/// `None` before `gtk_init` — it asserts, and the test that expected a `None` is how that was
+/// found out. So the question is asked of GTK, on the main thread, before GDK is asked
+/// anything at all.
+pub fn display_type_name() -> String {
+    use gtk::glib::prelude::ObjectExt;
+
+    if !gtk::is_initialized_main_thread() {
+        return String::new();
+    }
+    gdk::Display::default().map_or_else(String::new, |display| display.type_().name().to_string())
+}
+
 /// What can go wrong with a clipboard.
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {

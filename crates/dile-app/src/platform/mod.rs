@@ -144,9 +144,168 @@ pub const AUTO_PASTE_OFFERED: bool = cfg!(target_os = "linux");
 /// too: three places, one string.
 pub const AUTO_PASTE_FAILED: &str = "panel.state.autopaste.failed";
 
+/// Which window system this build is talking to.
+///
+/// **Not the operating system.** The same binary on the same Linux machine answers one way
+/// under Wayland and another under `GDK_BACKEND=x11`, and the two differ on exactly the two
+/// questions below. It is asked once, when the panel is built, because GDK chooses a backend
+/// at start-up and never changes its mind afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowSystem {
+    /// The Windows desktop.
+    Windows,
+    /// A Wayland compositor, through GTK3.
+    Wayland,
+    /// An X server — which includes XWayland, because from a client's side it is the same
+    /// protocol giving the same answers.
+    X11,
+    /// Something this application has not been taught to recognise, and will not guess about.
+    Other,
+}
+
+impl WindowSystem {
+    /// What this process is actually talking to.
+    ///
+    /// `cfg!` rather than `#[cfg]`, for [`DELIVERY`]'s reason: both branches are then ordinary
+    /// compiled code on both platforms, so neither of them is a spelling only one machine ever
+    /// type-checks.
+    #[must_use]
+    pub fn current() -> WindowSystem {
+        if cfg!(windows) {
+            WindowSystem::Windows
+        } else {
+            WindowSystem::named(&display_type_name())
+        }
+    }
+
+    /// Which window system a GDK display's type name means.
+    ///
+    /// Here rather than in [`linux`] so that it is a pure function of a string on every
+    /// platform, with the two names in one place and a test that reads them. An unrecognised
+    /// name — or no display at all, which is what a `cargo test` process has — is
+    /// [`WindowSystem::Other`]: a desktop nobody has measured gets the behaviour every build
+    /// had before it was measured, rather than a guess.
+    #[must_use]
+    pub fn named(name: &str) -> WindowSystem {
+        match name {
+            "GdkWaylandDisplay" => WindowSystem::Wayland,
+            "GdkX11Display" => WindowSystem::X11,
+            _ => WindowSystem::Other,
+        }
+    }
+
+    /// The name for a log line.
+    ///
+    /// One word each, and `unknown` rather than a sentence for the last one: a log line is not
+    /// a translated string, and the i18n scan is right to refuse prose in Rust either way.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            WindowSystem::Windows => "windows",
+            WindowSystem::Wayland => "wayland",
+            WindowSystem::X11 => "x11",
+            WindowSystem::Other => "unknown",
+        }
+    }
+}
+
+/// The GDK display's type name, where there is a GDK to ask.
+///
+/// Empty on a platform with no GTK backend, which [`WindowSystem::named`] reads as
+/// [`WindowSystem::Other`] — the same answer it gives a Linux machine with no display.
+fn display_type_name() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        linux::display_type_name()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        String::new()
+    }
+}
+
+/// How the panel's window leaves the screen when a card closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closing {
+    /// Unmap it, which is what *hidden* means everywhere a window's position belongs to the
+    /// application that owns it.
+    Unmap,
+    /// Minimize it, and bring it back by asking to be activated.
+    ///
+    /// The window then lives between two cards instead of being built again for each one.
+    /// That is visible to the user in two ways, and both are the point: the card comes back
+    /// where it was dragged to, and a closed panel is a **minimized window rather than no
+    /// window** — it is in the switcher and in the overview, which an unmapped one would not
+    /// be. `skipTaskbar` cannot take it back out; that flag has no Wayland equivalent either.
+    Minimize,
+}
+
+/// How a card is taken off the screen, which is a different act on each window system.
+///
+/// **Measured on this machine — Fedora 44, GNOME 50.4 Wayland, mutter 50.4 — rather than
+/// read.** Two protocol traces and one round trip decided it:
+///
+/// * Under Wayland, `gtk_widget_hide` sends `xdg_toplevel.destroy` and `xdg_surface.destroy`,
+///   and the next show builds a **new** `wl_surface`, `xdg_surface` and `xdg_toplevel`. mutter
+///   answers a destroyed toplevel by destroying its window and placing the replacement from
+///   scratch, which with `center-new-windows` on is the middle of the screen. Dragging was
+///   never the broken half — the compositor keeps a dragged position for as long as the window
+///   lives — and `hide()` is what ends that life. `gtk_widget_unmap` was measured too, and is
+///   the same two requests.
+/// * `gtk_window_iconify` sends `xdg_toplevel.set_minimized` and destroys nothing: one
+///   `xdg_toplevel` survived two full rounds of minimize and restore. The restore is
+///   `xdg_activation_v1.activate` on the same surface — what `gtk_window_present` does, and
+///   what `tao` sends for `set_focus()` — and mutter answers it with a `configure` carrying
+///   *activated*. It works with `accept_focus` off, which is how this window is built.
+/// * On the X11 backend, where a client may read its own coordinate, the whole round trip is
+///   a number rather than an inference: a window moved to (417, 733) came back from
+///   hide-and-show at (606, 570), the centre of this screen, and came back from
+///   minimize-and-present at **(417, 733)**. Same compositor and same placement rule as the
+///   Wayland case, and the one backend where the question could be answered by reading a
+///   coordinate instead of by reading the wire.
+///
+/// So Linux minimizes, on either backend. X11 could instead put the card back itself — its
+/// `set_position` before a show was measured to work — but that path needs a monitor
+/// rectangle to clamp into, and [`unported`]'s `primary_monitor` has none to give on this
+/// platform. Minimizing needs no coordinate at all, which is why it is the answer for the
+/// backend that has numbers as well as for the one that does not.
+///
+/// Windows unmaps, as it always has: there a position is the application's own to keep,
+/// [`remembers_position`] is true, and a minimized panel would put a taskbar entry on screen
+/// for a card that is supposed to be gone.
+#[must_use]
+pub const fn closing(system: WindowSystem) -> Closing {
+    match system {
+        WindowSystem::Wayland | WindowSystem::X11 => Closing::Minimize,
+        // The conservative answer, and the one every desktop understands.
+        WindowSystem::Windows | WindowSystem::Other => Closing::Unmap,
+    }
+}
+
+/// Whether where a window says it is means anything on this window system.
+///
+/// The panel writes a dragged position into `settings.ui.panel_position` and puts the card
+/// back there the next time it opens. That rests on two things a Wayland client does not have:
+/// a `Moved` event carrying a real coordinate, and a `set_position` the compositor honours.
+/// GTK3 answers `gdk_window_get_position` with (0, 0) under Wayland whatever the window is
+/// doing, so the memory there would not be empty but **wrong** — a settings file filling up
+/// with the origin, once per display.
+///
+/// False there rather than merely unused, so that the day a monitor rectangle does arrive on
+/// Linux the memory does not quietly start recording zeroes.
+#[must_use]
+pub const fn remembers_position(system: WindowSystem) -> bool {
+    match system {
+        WindowSystem::Windows | WindowSystem::X11 => true,
+        WindowSystem::Wayland | WindowSystem::Other => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AUTO_PASTE_OFFERED, DELIVERY, Delivery};
+    use super::{
+        AUTO_PASTE_OFFERED, Closing, DELIVERY, Delivery, WindowSystem, closing, remembers_position,
+    };
 
     #[test]
     fn a_clipboard_hand_over_and_an_aimed_paste_chord_are_never_both_on() {
@@ -201,6 +360,125 @@ mod tests {
         }
         if cfg!(windows) {
             assert_eq!(DELIVERY, Delivery::Paste);
+        }
+    }
+
+    /// Every window system, on every machine that runs this suite.
+    const EVERY: [WindowSystem; 4] = [
+        WindowSystem::Windows,
+        WindowSystem::Wayland,
+        WindowSystem::X11,
+        WindowSystem::Other,
+    ];
+
+    #[test]
+    fn every_window_system_answers_both_questions() {
+        // The table, written out, because the two questions are **independent** and the first
+        // draft of this test assumed they were not. X11 is the case that proves it: a
+        // coordinate there is a real number, so the position is worth remembering — and the
+        // card is still minimized rather than unmapped, because putting one back needs a
+        // monitor rectangle Linux has none of. What the two have in common is only the
+        // subject, not the answer.
+        let table = [
+            (WindowSystem::Windows, Closing::Unmap, true),
+            (WindowSystem::Wayland, Closing::Minimize, false),
+            (WindowSystem::X11, Closing::Minimize, true),
+            (WindowSystem::Other, Closing::Unmap, false),
+        ];
+        assert_eq!(table.len(), EVERY.len(), "a window system with no row");
+        for (system, leaves_by, remembers) in table {
+            assert_eq!(
+                closing(system),
+                leaves_by,
+                "{system:?} closes the wrong way"
+            );
+            assert_eq!(
+                remembers_position(system),
+                remembers,
+                "{system:?} remembers the wrong thing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_card_is_never_left_with_nobody_keeping_its_place() {
+        // The invariant that does hold across the table above: where this application does
+        // not remember a position, the window is kept alive so that the compositor can. The
+        // one exception is deliberate and is named here rather than hidden in the `match` —
+        // `Other` is a desktop nothing has measured, and it keeps the behaviour every build
+        // had before this package instead of being handed a fix nobody tried there.
+        for system in EVERY {
+            if system == WindowSystem::Other {
+                continue;
+            }
+            assert!(
+                remembers_position(system) || closing(system) == Closing::Minimize,
+                "{system:?} forgets where the card was and lets the window die too"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_minimizes_on_both_of_its_backends() {
+        // Measured, and the reason is in `closing`: `gtk_widget_hide` destroys the toplevel
+        // on Wayland, and on X11 the position is lost too — (417, 733) came back as
+        // (606, 570). The X11 answer is deliberately not "unmap and put it back", because
+        // putting it back needs a monitor rectangle this platform does not have.
+        assert_eq!(closing(WindowSystem::Wayland), Closing::Minimize);
+        assert_eq!(closing(WindowSystem::X11), Closing::Minimize);
+    }
+
+    #[test]
+    fn windows_is_untouched_by_all_of_this() {
+        // This package is a Linux fix, and the assertion that says so. A card on Windows is
+        // hidden the way it has always been hidden, and its position is still this
+        // application's own to remember.
+        assert_eq!(closing(WindowSystem::Windows), Closing::Unmap);
+        assert!(remembers_position(WindowSystem::Windows));
+    }
+
+    #[test]
+    fn a_window_system_with_no_name_is_given_the_old_behaviour_rather_than_a_guess() {
+        // `Other` is what GDK returns a name for that this application does not recognise.
+        // Minimizing a window on a desktop nobody has measured would be a guess; unmapping it
+        // is what every build did before this package, which is the one behaviour known not
+        // to be a new surprise.
+        assert_eq!(closing(WindowSystem::Other), Closing::Unmap);
+        assert!(!remembers_position(WindowSystem::Other));
+    }
+
+    #[test]
+    fn the_two_gdk_display_types_are_the_two_backends() {
+        // The names GTK3 gives its display objects, and the only thing this application reads
+        // to tell the two Linux backends apart. Written down as a test because they are a
+        // dependency's spelling rather than ours: a build against something that renamed them
+        // would not fail to compile, it would quietly decide every Linux machine is `Other`
+        // and go back to hiding the panel.
+        assert_eq!(
+            WindowSystem::named("GdkWaylandDisplay"),
+            WindowSystem::Wayland
+        );
+        assert_eq!(WindowSystem::named("GdkX11Display"), WindowSystem::X11);
+        // A backend nothing here has measured, and no display at all, are the same answer.
+        assert_eq!(
+            WindowSystem::named("GdkBroadwayDisplay"),
+            WindowSystem::Other
+        );
+        assert_eq!(WindowSystem::named(""), WindowSystem::Other);
+    }
+
+    #[test]
+    fn this_machine_knows_which_window_system_it_is_on() {
+        // `current()` reads GDK's own answer on Linux rather than an environment variable, so
+        // this is a real question on a real display connection — except in a test process,
+        // which has no display at all and gets `Other`. So the assertion is the one thing
+        // that holds in both: a build never claims to be on a window system its own platform
+        // could not be running.
+        let system = WindowSystem::current();
+        if cfg!(windows) {
+            assert_eq!(system, WindowSystem::Windows);
+        } else {
+            assert_ne!(system, WindowSystem::Windows);
         }
     }
 }

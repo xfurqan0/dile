@@ -355,9 +355,24 @@ The five limits of the feasibility work of 2026-09-15, every one of them measure
 
 1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
    for the terminal family, and no "that window is gone, so I did not paste" guarantee.
-2. **The card lands where the compositor puts it.** `xdg-shell` has no global coordinate
-   space, and `zwlr_layer_shell_v1` — how a HUD is placed elsewhere — GNOME does not advertise
-   at all. The per-monitor drag memory is dead weight on this platform, not a feature.
+2. **The first card of a run lands where the compositor puts it — and then it stays where you
+   drag it.** `xdg-shell` has no global coordinate space, and `zwlr_layer_shell_v1` — how a HUD
+   is placed elsewhere — GNOME does not advertise at all, so nothing can ask for top-centre and
+   the per-monitor drag memory is dead weight here. **Dragging was never the broken half.** What
+   lost the position was *closing* the card: `gtk_widget_hide` sends `xdg_toplevel.destroy`,
+   mutter answers a destroyed toplevel by destroying its window, and the replacement is placed
+   from scratch — into the middle of the screen, because `center-new-windows` is on. Measured on
+   the wire under Wayland, and measured as a number on the X11 backend where a client may read
+   its own coordinate: a window moved to (417, 733) came back from hide-and-show at
+   **(606, 570)**, the centre of that screen, and came back from minimize-and-present at
+   **(417, 733)**. So on Linux a closed card is **minimized rather than hidden**
+   (`platform::closing`, 2026-09-17), and it reopens where it was left for as long as the
+   application runs. Two costs, and the start-up log carries both: a closed panel is a minimized
+   window in the switcher and the overview — `skipTaskbar` has no Wayland equivalent either —
+   and a **restart** puts the first card back wherever the compositor likes, because no protocol
+   on this desktop carries a window's place across the process that owned it.
+   `xdg-session-management-v1` is the one that would, and GNOME 50 ships it under an unstable
+   name behind a debug switch, for restoring a session rather than for showing a window again.
 3. **The card cannot refuse the focus.** `focusable: false` has no Wayland equivalent, so the
    card takes the keyboard from whatever you were typing in. **And that is what makes the
    clipboard work**: a client may set the selection only while it holds the keyboard, so the

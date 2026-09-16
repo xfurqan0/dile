@@ -29,6 +29,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **The panel reopens where you dragged it, on Linux.** Dragging the card worked all along;
+  closing it was what threw the position away. `gtk_widget_hide` sends `xdg_toplevel.destroy`
+  under Wayland, mutter answers a destroyed toplevel by destroying its window, and the next card
+  is placed from scratch — in the middle of the screen, because `center-new-windows` is on. A
+  closed card is now **minimized** instead, which keeps the window alive and its place with it,
+  and it comes back by asking the compositor to activate it. Measured on the wire, and as a
+  number on the X11 backend where a client may read its own coordinate: a window moved to
+  (417, 733) came back from hide-and-show at the centre of the screen and from
+  minimize-and-present at (417, 733). **Two costs, both named in the start-up log**: while a
+  card is closed there is a minimized Dile window in the switcher and the overview —
+  `skipTaskbar` has no Wayland equivalent — and a restart still opens the first card wherever
+  the compositor likes, because nothing on this desktop carries a window's place across the
+  process that owned it. Windows is untouched: a card there is hidden and shown as it always
+  was, and its position is still remembered per monitor in `settings.json`.
 - **`scripts/build-host.sh` asks for the SPIR-V headers before it spends four minutes finding
   out.** `ggml-vulkan.cpp` includes `spirv/unified1/spirv.hpp` directly and never links the
   CMake target that carries its include directory, so a machine with the package config and

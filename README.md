@@ -278,9 +278,12 @@ Every one of these was measured on GNOME 50 under Wayland rather than read:
 
 1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
    for the terminal family, and no "that window is gone, so I did not paste" guarantee.
-2. **The card lands where the compositor puts it**, not top-centre. `xdg-shell` has no global
-   coordinate space, and the protocol that would place a HUD is not available on GNOME. The
-   per-monitor drag memory does nothing here.
+2. **The first card lands where the compositor puts it**, not top-centre — and then it stays
+   where you drag it. `xdg-shell` has no global coordinate space, and the protocol that would
+   place a HUD is not available on GNOME, so the per-monitor drag memory does nothing here; a
+   closed card is minimized rather than hidden instead, which is what keeps it in place. Two
+   costs: while a card is closed there is a minimized Dile window in the switcher, and a
+   restart starts the next one wherever the compositor likes.
 3. **The card takes the keyboard** while it is on screen. `focusable: false` has no Wayland
    equivalent — and that is what makes the copy work at all, because a client may set the
    clipboard only while it holds the keyboard.
