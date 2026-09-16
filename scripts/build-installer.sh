@@ -22,6 +22,13 @@
 #   scripts/build-installer.sh                  # what a release is built with
 #   scripts/build-installer.sh --skip-sidecars  # a second run that only changed the app
 #   scripts/build-installer.sh --legacy-tray    # a machine with no ayatana development files
+#
+# **`--skip-sidecars` means what it says, and it has one sharp edge.** It assumes
+# `crates/dile-app/binaries/` holds *release* sidecars — and the CI gate, `build-host.sh --cpu
+# --debug`, leaves debug ones there. Run it after a gate run and the bundler copies those into
+# the package, unremapped, carrying the paths of the machine that built them. That is not
+# hypothetical: it happened while this script was being written, and step 5 deleted the bundle
+# and named the reason, which is what step 5 is for.
 
 set -uo pipefail
 
@@ -39,7 +46,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --help | -h)
-            sed -n '2,25p' "$0"
+            sed -n '2,31p' "$0"
             exit 0
             ;;
         *)
