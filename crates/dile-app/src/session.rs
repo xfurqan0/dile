@@ -142,10 +142,11 @@ impl Elapsed {
 /// **not** an error here — it is reported on the tray and retried at the next press, because
 /// a device can be plugged in a minute later.
 ///
-/// **One of those failures gets a window before the process ends.** On Linux the trigger
-/// needs a permission the distribution does not grant, and a tray application that exits with
-/// a line on a stderr nobody is reading has told the user nothing. [`no_keyboard_access`] is
-/// that window, and it is the one case where failing to start is not the whole answer.
+/// **One of those failures gets a window instead of an `Err`.** On Linux the trigger needs a
+/// permission the distribution does not grant, and a tray application that exits with a line
+/// on a stderr nobody is reading has told the user nothing. That case returns `Ok`, puts
+/// [`no_keyboard_access`] on screen, and the application ends when the window is dismissed —
+/// which is still failing to start, with the person told why first.
 pub fn start(
     ui: Ui,
     store: SettingsStore,
@@ -158,7 +159,15 @@ pub fn start(
         Err(error) => {
             log::error!("the trigger could not be installed: {error}");
             if matches!(error, dile_hotkey::Error::KeyboardAccess) {
+                // Not an error out of here, and the reason is mechanical. Start-up runs
+                // inside the event loop's first turn, and that loop is what draws a window —
+                // so returning now would take the process down before anything could be put
+                // on a screen, and *blocking* here to show something would wait forever for
+                // a loop that is waiting for this function. [`no_keyboard_access`] hands the
+                // window to a thread of its own and lets start-up finish, and the
+                // application ends when the person has read it.
                 no_keyboard_access(&ui);
+                return Ok(());
             }
             return Err(Box::new(error));
         }
@@ -192,23 +201,41 @@ pub fn start(
 
 /// Say, in a window, that the keyboard cannot be read — and what opens it.
 ///
-/// The application is about to exit, and on Linux it is a tray application with no tray yet
-/// and quite possibly no terminal behind it: an error on stderr at this moment reaches
-/// nobody. A native dialog is the only surface that exists before the tray does, which is the
-/// same reason the model-download consent uses one.
+/// On Linux this is a tray application with no tray yet and quite possibly no terminal behind
+/// it, so an error on stderr at this moment reaches nobody. A native dialog is the only
+/// surface that exists this early, which is also why the model-download consent uses one.
+///
+/// **On a thread of its own, and that is not a detail.** `blocking_show` waits on a channel
+/// that the *event loop* answers, so calling it from the loop's own turn — which is where
+/// start-up runs — waits forever for itself, with no window ever drawn. Measured that way
+/// first: the process sat in `mpsc::Receiver::recv` under `no_keyboard_access` and never came
+/// back. Here the loop is left free to draw the thing, and the thread that asked for it takes
+/// the application down once it has an answer.
 ///
 /// It is not shown for any other hotkey failure. Everything else the operating system refuses
 /// a hook for is a bug or a conflict with another program, and neither has a paragraph a user
 /// can act on; this one does, and the paragraph is the point of the window.
 fn no_keyboard_access(ui: &Ui) {
+    let app = ui.app().clone();
     let strings = ui.strings();
-    ui.app()
-        .dialog()
-        .message(strings.text("dialog.keyboard.body"))
-        .title(strings.text("dialog.keyboard.title"))
-        .kind(MessageDialogKind::Error)
-        .buttons(MessageDialogButtons::Ok)
-        .blocking_show();
+    let spawned = thread::Builder::new()
+        .name("dile-keyboard-access".to_owned())
+        .spawn(move || {
+            app.dialog()
+                .message(strings.text("dialog.keyboard.body"))
+                .title(strings.text("dialog.keyboard.title"))
+                .kind(MessageDialogKind::Error)
+                .buttons(MessageDialogButtons::Ok)
+                .blocking_show();
+            // Dismissing it is the answer to "why did nothing happen when I held the key",
+            // and there is nothing else this run can do.
+            app.exit(1);
+        });
+    if let Err(error) = spawned {
+        // Nowhere left to say it but the log, and nothing left to wait for.
+        log::error!("the keyboard-access window could not be opened: {error}");
+        ui.app().exit(1);
+    }
 }
 
 /// The session thread: one action at a time, in the order the user produced them.

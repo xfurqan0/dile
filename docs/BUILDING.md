@@ -536,8 +536,8 @@ Concretely:
 | | On Linux today |
 |---|---|
 | The trigger, hold-to-talk, right Ctrl | works, once one udev rule is installed — see below |
-| Microphone, pre-roll, VAD, 16 kHz | works, through ALSA (which is also how cpal reaches PipeWire) |
-| The engine, `dile transcribe`, model download | works; CPU tier |
+| Microphone, pre-roll, VAD, 16 kHz | works, through ALSA — which is also how cpal reaches PipeWire |
+| The engine, `dile transcribe`, model download | works, on the CPU tier, with a floor — measured below |
 | Tray icon and menu | works, and on GNOME needs the AppIndicator extension |
 | Placing the card on a screen | **no** — `xdg-shell` has no global coordinate space |
 | Naming the target application | **no** — a Wayland client is not told what has the focus |
@@ -627,6 +627,64 @@ is the one that answers here:
 
 `DILE_MODEL_DIR` overrides the second one in a debug build, which is how a machine that
 already holds these weights avoids downloading a second copy.
+
+### The engine on the CPU tier, measured
+
+Linux does not probe the GPU tier. The probe costs a cold load of the Vulkan tier's weights,
+which means downloading a gigabyte *before* finding anything out, and whisper.cpp has an open,
+unfixed `DeviceLost` fault on the Intel integrated graphics this port was measured on. The
+tier is still there and still supported — `Settings > Engine > Tier`, which is
+`engine.tier_override` in `settings.json`, goes straight to it with no probe. What Dile
+refuses is choosing it for somebody.
+
+So the CPU tier is what a Linux machine gets, and these are its numbers.
+
+```bash
+dile transcribe crates/dile-app/assets/probe.wav --json --yes
+```
+
+The committed probe clip is two seconds of Turkish with a known answer, which makes it the
+end-to-end check as well as the timing one:
+
+```text
+2.04 s of audio, 16000 Hz 1 channel(s) -> 16 kHz mono
+loading ggml-large-v3-turbo-q5_0.bin on the cpu tier
+{ "raw": "Bugün hava çok güzel ve deniz sakin.", … "took_ms": 14279, "device": "CPU" }
+```
+
+**Two seconds of audio and a thirty-second one take the same time**, which is the single most
+useful thing to know about this tier. Whisper pads every request to a 30-second mel window, so
+the encoder does the same work either way: 14.3 s for the 2 s clip against 14.2 s for a 30 s
+one, on the same machine in the same minute. A dictation therefore has a **floor**, not a
+duration — a four-word sentence costs what a paragraph costs.
+
+| Clip | `threads: 0` | `threads: 20` |
+|---|---|---|
+| 2.04 s (`probe.wav`) | 28.4 s | 14.3 s |
+| 30 s | 28.2 s | 14.2 s |
+| 60 s | 56.4 s | 29.9 s |
+
+Real-time factor against the 30-second window: **0.94** as the product runs today, **0.47**
+with the threads asked for explicitly. Three runs of each of the two configurations, spread
+under half a second.
+
+**`0` does not mean "use this machine".** `transcribe-cpp`'s default is the number of CPUs the
+process may run on *capped at eight* — `src/transcribe-batch-util.h`,
+`default_n_threads(int cap = 8)` — so everything above eight hardware threads sits idle.
+Nothing in this workspace passes anything but `0` yet: raising it is a decision about the
+fallback tier on Windows as much as here, and it wants a Windows measurement beside this one
+before it is taken.
+
+**These numbers are a floor, not a specification.** They were taken on a 14-core, 20-thread
+i9-13900H **running on battery** under the `powersave` governor, idling at 645 MHz against a
+5.4 GHz maximum. On mains power they can only improve. **OpenBLAS was not installed**
+(`openblas-devel`); `transcribe.cpp` documents it as a large win on the decode path, and it is
+the first thing to add before believing any of the above is the best this tier can do.
+
+Weights live where `crates/dile-client/src/paths.rs` said they would before any of this ran —
+`~/.local/share/io.github.xfurqan0.dile/models/` — and the downloader reaches Hugging Face
+over rustls with no system OpenSSL involved. A machine that already holds a copy points
+`DILE_MODEL_DIR` at it in a debug build.
 
 ### Keyboard access on Linux
 

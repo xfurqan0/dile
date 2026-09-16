@@ -25,7 +25,7 @@ pub struct DeviceInfo {
     pub is_default: bool,
 }
 
-/// Every input device on the default host.
+/// Every input device on the default host, named so that a person can tell them apart.
 pub(crate) fn list() -> Result<Vec<DeviceInfo>, Error> {
     let host = cpal::default_host();
     let default_id = host
@@ -41,13 +41,86 @@ pub(crate) fn list() -> Result<Vec<DeviceInfo>, Error> {
             continue;
         };
         let id = id.to_string();
+        if is_discard_device(&id) {
+            continue;
+        }
         devices.push(DeviceInfo {
-            name: device.to_string(),
+            name: tidy_name(&device.to_string(), &id),
             is_default: Some(&id) == default_id.as_ref(),
             id,
         });
     }
+    disambiguate(&mut devices);
     Ok(devices)
+}
+
+/// ALSA's `null`, which is a bin rather than a microphone.
+///
+/// It describes itself as *"Discard all samples (playback) or generate zero samples
+/// (capture)"*, it is enumerated as an input because it technically is one, and choosing it
+/// gives a product that records perfect silence forever and says "nothing heard" every time.
+/// Windows has no equivalent to offer, so no Windows user has ever had to not pick it.
+///
+/// Matched on the whole id rather than a suffix so that a sound card someone named `null`
+/// keeps its place, and so that a change in how cpal spells an id makes this stop filtering
+/// rather than start filtering something real.
+fn is_discard_device(id: &str) -> bool {
+    id == "alsa:null"
+}
+
+/// What to call a device in a list somebody has to choose from.
+///
+/// On Windows the system's own name is already the answer — *"Mikrofon (PRO X)"* — and this
+/// returns it untouched. ALSA's is a card name and a description joined by a comma, and the
+/// description is routinely empty, which arrives as `"sof-hda-dsp, "`: a trailing separator
+/// with nothing after it. Trimming that is not renaming anything; it is dropping punctuation
+/// that was only ever there to join two fields, one of which does not exist.
+///
+/// A name that trims away to nothing falls back to the id, because a blank row in a device
+/// list is worse than a technical one.
+fn tidy_name(raw: &str, id: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches([',', ';', '-']).trim();
+    if trimmed.is_empty() {
+        short_id(id)
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Give devices that share a name the part of their id that differs.
+///
+/// One piece of hardware appears in the ALSA list many times over — `sysdefault:`, `hw:` and
+/// `plughw:` for each of its subdevices — and every one of them carries the same card name.
+/// Seven identical rows is not a choice, it is a guess, and the one a user is most likely to
+/// land on (`hw:`) is also the one that refuses a sample rate it does not run at natively.
+///
+/// Only names that actually collide are touched, which is what keeps this from doing anything
+/// at all on a platform whose names are already distinct.
+fn disambiguate(devices: &mut [DeviceInfo]) {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for device in devices.iter() {
+        *seen.entry(device.name.as_str()).or_default() += 1;
+    }
+    let collisions: Vec<String> = seen
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    for device in devices.iter_mut() {
+        if collisions.contains(&device.name) {
+            device.name = format!("{} ({})", device.name, short_id(&device.id));
+        }
+    }
+}
+
+/// An id with its host prefix taken off, for use inside a name.
+///
+/// `alsa:hw:CARD=0,DEV=6` reads as `hw:CARD=0,DEV=6`. The host is the same for every row in
+/// the list, so printing it seven times says nothing.
+fn short_id(id: &str) -> String {
+    id.split_once(':')
+        .map_or_else(|| id.to_owned(), |(_, rest)| rest.to_owned())
 }
 
 /// A cpal input stream, wrapped as a [`Source`].
@@ -198,6 +271,8 @@ impl StreamGuard for DeviceGuard {}
 
 #[cfg(test)]
 mod tests {
+    use super::{DeviceInfo, disambiguate, is_discard_device, short_id, tidy_name};
+
     /// Listing devices touches the host, which CI does not have. Ignored rather than
     /// deleted: it is the check the maintainer runs on a machine with a microphone.
     #[test]
@@ -210,5 +285,99 @@ mod tests {
             1,
             "exactly one default input"
         );
+        for device in &devices {
+            assert!(!device.name.trim().is_empty(), "{device:?} has no name");
+        }
+        let mut names: Vec<&str> = devices.iter().map(|device| device.name.as_str()).collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), before, "two rows a person cannot tell apart");
+    }
+
+    /// The measured shape on Fedora 44: a card name, a comma, and an empty description.
+    #[test]
+    fn an_alsa_name_loses_the_separator_its_second_field_never_filled() {
+        assert_eq!(
+            tidy_name("sof-hda-dsp, ", "alsa:hw:CARD=0,DEV=0"),
+            "sof-hda-dsp"
+        );
+        assert_eq!(
+            tidy_name("  HDA Intel PCH,  ", "alsa:hw:CARD=0"),
+            "HDA Intel PCH"
+        );
+    }
+
+    /// A description that says something keeps every character of it, comma included.
+    #[test]
+    fn a_name_with_a_real_second_field_is_left_alone() {
+        assert_eq!(
+            tidy_name("sof-hda-dsp, HDA Analog", "alsa:hw:CARD=0,DEV=0"),
+            "sof-hda-dsp, HDA Analog"
+        );
+        assert_eq!(
+            tidy_name("Mikrofon (PRO X)", "wasapi:{0.0.1.0}"),
+            "Mikrofon (PRO X)"
+        );
+    }
+
+    /// A blank row is worse than a technical one.
+    #[test]
+    fn a_name_that_trims_to_nothing_falls_back_to_the_id() {
+        assert_eq!(
+            tidy_name(", ", "alsa:plughw:CARD=0,DEV=7"),
+            "plughw:CARD=0,DEV=7"
+        );
+        assert_eq!(tidy_name("   ", "alsa:pipewire"), "pipewire");
+    }
+
+    /// Seven rows reading `sof-hda-dsp` is a guess, not a choice.
+    #[test]
+    fn devices_that_share_a_name_are_told_apart_by_their_id() {
+        let mut devices = vec![
+            device("sof-hda-dsp", "alsa:hw:CARD=0,DEV=0"),
+            device("sof-hda-dsp", "alsa:plughw:CARD=0,DEV=0"),
+            device("PipeWire Sound Server", "alsa:pipewire"),
+        ];
+        disambiguate(&mut devices);
+        assert_eq!(devices[0].name, "sof-hda-dsp (hw:CARD=0,DEV=0)");
+        assert_eq!(devices[1].name, "sof-hda-dsp (plughw:CARD=0,DEV=0)");
+        // Untouched: nothing else is called this, so there is nothing to tell it apart from.
+        assert_eq!(devices[2].name, "PipeWire Sound Server");
+    }
+
+    /// Which is also the whole of what happens on a platform whose names already differ.
+    #[test]
+    fn distinct_names_are_left_exactly_as_the_system_spells_them() {
+        let mut devices = vec![
+            device("Mikrofon (PRO X)", "wasapi:{0.0.1.0}"),
+            device("Microphone Array", "wasapi:{0.0.1.1}"),
+        ];
+        let before = devices.clone();
+        disambiguate(&mut devices);
+        assert_eq!(devices, before);
+    }
+
+    /// The bin is not a microphone, and a card someone named `null` still is one.
+    #[test]
+    fn only_alsas_own_discard_device_is_left_out_of_the_list() {
+        assert!(is_discard_device("alsa:null"));
+        assert!(!is_discard_device("alsa:nullcard"));
+        assert!(!is_discard_device("alsa:hw:CARD=null"));
+        assert!(!is_discard_device("wasapi:null"));
+    }
+
+    #[test]
+    fn a_short_id_drops_the_host_every_row_shares() {
+        assert_eq!(short_id("alsa:hw:CARD=0,DEV=6"), "hw:CARD=0,DEV=6");
+        assert_eq!(short_id("nocolon"), "nocolon");
+    }
+
+    fn device(name: &str, id: &str) -> DeviceInfo {
+        DeviceInfo {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            is_default: false,
+        }
     }
 }

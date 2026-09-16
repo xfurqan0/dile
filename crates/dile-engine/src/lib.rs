@@ -218,10 +218,20 @@ impl Model {
 
     /// Open a session on this model, choosing how many CPU threads it may use.
     ///
-    /// `0` leaves the decision to the runtime, which is the right answer on the Vulkan tier
-    /// — almost nothing runs on the CPU there. It is a knob at all because the CPU fallback
-    /// tier is the one place where the number matters, and because the engine host takes it
-    /// from the wire rather than deciding for itself.
+    /// `0` leaves the decision to the runtime, which is the right answer on the Vulkan tier —
+    /// almost nothing runs on the CPU there. It is a knob at all because the CPU fallback tier
+    /// is the one place where the number matters, and because the engine host takes it from
+    /// the wire rather than deciding for itself.
+    ///
+    /// **`0` is not "as many as this machine has".** `transcribe-cpp`'s default is the number
+    /// of CPUs the process may run on *capped at eight*
+    /// (`src/transcribe-batch-util.h`, `default_n_threads(int cap = 8)`), so a machine with
+    /// more than eight hardware threads leaves the rest of them idle. Measured on a 14-core,
+    /// 20-thread i9-13900H against a 30-second clip: 28.2 s at `0`, 14.2 s at `20` — twice
+    /// the speed, which on the CPU tier is the difference between a real-time factor of 0.94
+    /// and one of 0.47. Nothing here passes anything but `0` yet; that is a decision about
+    /// the product's fallback tier on every platform rather than a Linux one, and
+    /// `docs/BUILDING.md` carries the measurement to make it with.
     pub fn engine_with_threads(&self, threads: u32) -> Result<Engine, Error> {
         let options = SessionOptions {
             // Saturating rather than wrapping: a thread count that arrived as nonsense

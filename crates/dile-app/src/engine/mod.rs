@@ -65,6 +65,18 @@ pub use dile_client::{download, host};
 
 /// How many times in a row the engine process may go down before it is left down.
 ///
+/// Whether a first run probes the GPU tier without being asked for it.
+///
+/// **Windows: yes.** The Vulkan tier is the product working as designed, the probe is the
+/// thing that catches the machine where it is not, and `docs/PROJECT.md` §3 built the whole
+/// two-tier arrangement around that one cold load.
+///
+/// **Linux: no,** and [`ProbeError::NotProbedHere`] is the sentence that says why. The tier
+/// is reached by asking for it rather than by being put there. The engine still runs in its
+/// own process, so a driver that falls over takes the engine and not the tray — which is what
+/// makes offering the tier at all defensible.
+const PROBE_ON_FIRST_RUN: bool = !cfg!(target_os = "linux");
+
 /// Three, and then the tray says so. A respawn loop against a fault that repeats — a driver
 /// that bug-checks on load, a model file that was corrupted on disk — is a machine heating
 /// up for nothing, and the honest report is that the engine does not work here.
@@ -316,9 +328,14 @@ struct Supervisor {
     panel: Arc<Panel>,
     /// CPU threads for the engine; 0 leaves it to the runtime.
     ///
-    /// Zero is right on the Vulkan tier, where almost nothing runs on the CPU, and it is
-    /// right on the fallback tier too until somebody has measured otherwise. Not a setting:
-    /// a number nobody can measure the effect of is not a question to put on a form.
+    /// Zero is right on the Vulkan tier, where almost nothing runs on the CPU. On the
+    /// fallback tier it has now been measured, and it is not right there: the runtime's own
+    /// default caps at eight threads, so a 20-thread machine runs the CPU tier at half the
+    /// speed it could (`dile-engine`, `Model::engine_with_threads`, has the numbers).
+    /// Changing it is a decision about the fallback tier on every platform, which is why it
+    /// is still zero and why the measurement is written down rather than acted on here.
+    /// Not a setting either way: a number nobody can measure the effect of is not a question
+    /// to put on a form.
     threads: u32,
     /// The tier this machine decided on.
     tier: Option<Device>,
@@ -480,6 +497,18 @@ impl Supervisor {
     /// The answer is kept whichever way it goes: a machine that dropped to the CPU tier
     /// should not pay for another cold Vulkan load every morning to be told the same thing.
     fn decide_tier(&mut self, model_dir: &Path, tier_file: &Path) -> Result<Device, Halt> {
+        if !PROBE_ON_FIRST_RUN {
+            log::info!(
+                "the GPU tier is not probed on this platform, so this machine is on the CPU tier — \
+                 Settings > Engine > Tier goes there on purpose"
+            );
+            let record = TierRecord::taken(Device::Cpu, refused(&ProbeError::NotProbedHere));
+            if let Err(error) = state::write_tier(tier_file, &record) {
+                log::warn!("the tier decision could not be saved: {error}");
+            }
+            return Ok(Device::Cpu);
+        }
+
         let result = self.run_probe(model_dir)?;
         let tier = if result.passed {
             Device::Vulkan
