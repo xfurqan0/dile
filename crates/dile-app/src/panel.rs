@@ -44,16 +44,17 @@
 //! ## How a card leaves the screen, and why that is a platform question
 //!
 //! On Windows the window is hidden and shown again, and the position above is this
-//! application's to keep. On Linux it is **minimized** and brought back by asking to be
-//! activated, because hiding it there destroys the `xdg_toplevel` — and a compositor that has
-//! to build a window again places it again, in the middle of the screen, however carefully the
-//! last one was dragged. The measurements are in [`platform::closing`]; the short version is
-//! that dragging was never broken on Wayland and closing was.
+//! application's to keep. On the **X11** backend it is *minimized* and brought back by asking
+//! to be activated, because hiding it there loses the position too and minimizing keeps it.
+//! Under **Wayland** it is hidden, and every card therefore opens where the compositor puts
+//! it: hiding destroys the `xdg_toplevel`, so a dragged position dies with it — but minimizing
+//! is worse, because a compositor that keeps a minimized window will not agree to raise it for
+//! a trigger it never saw, and the card simply does not come back. The measurements are in
+//! [`platform::closing`].
 //!
-//! The choice is a value rather than a `cfg`, like [`platform::DELIVERY`], so both paths
-//! compile and are tested on either kind of machine. It costs the card a place in the window
-//! switcher while it is down, which is written into the start-up log rather than left to be
-//! discovered.
+//! The choice is a value rather than a `cfg`, like [`platform::DELIVERY`], so all three paths
+//! compile and are tested on either kind of machine. What it costs the person using it is
+//! written into the start-up log rather than left to be discovered.
 //!
 //! ## What the webview is told
 //!
@@ -227,10 +228,12 @@ struct Held {
     /// **Remembered rather than asked**, because the window cannot be asked once it is
     /// minimized instead of unmapped. `is_visible()` stays true through a minimize — that is
     /// what makes it the right question for *has this window ever been built* — and
-    /// `is_minimized()` is worse than useless on Wayland: GTK3 never raises its own
-    /// `ICONIFIED` state there, because the protocol has no event that says a window was
-    /// minimized, so `tao` reports `false` for a window that is minimized. Measured on GNOME
-    /// 50.4, and the reason the panel keeps this itself.
+    /// `is_minimized()` is worse than useless on the backends that have one: GTK3 never raises
+    /// its own `ICONIFIED` state under Wayland, because the protocol has no event that says a
+    /// window was minimized, so `tao` reports `false` for a window that is minimized. Measured
+    /// on GNOME 50.4, and the reason the panel keeps this itself. It stays the panel's own
+    /// answer now that only X11 minimizes: two states told apart by one field beats two
+    /// states told apart by which platform is asking.
     on_screen: bool,
 }
 
@@ -857,10 +860,11 @@ impl Panel {
         if built && platform::closing(self.system) == Closing::Minimize {
             // Deliberately no `place()`: the window is still where the user left it, and the
             // whole reason it was minimized rather than unmapped is that nobody has to put it
-            // back. `unminimize` alone is not enough under Wayland — the protocol has a
-            // request for minimizing and none for the other direction — so the window asks to
-            // be activated, which is `xdg_activation_v1` on the wire and what actually brings
-            // it up.
+            // back. `unminimize` alone is not enough — GTK sends nothing for it on a backend
+            // whose protocol has a request for minimizing and none for the other direction —
+            // so the window asks to be activated as well, which is what actually brings it up.
+            // Only X11 arrives here; `platform::closing` carries the round trip that took
+            // Wayland back out of this branch.
             self.size_to_base(&window);
             if let Err(error) = window.unminimize() {
                 log::warn!("the panel could not be unminimized: {error}");
@@ -886,13 +890,12 @@ impl Panel {
 
     /// Take the card off the screen and give the three keys back to the machine.
     ///
-    /// On Windows the window is unmapped, which is what hidden has always meant. On Linux it
-    /// is minimized instead, and [`platform::closing`] carries the measurements that decided
-    /// that: unmapping there destroys the `xdg_toplevel`, and a compositor that has to build a
-    /// window again places it again — in the middle of the screen, whatever the user did with
-    /// the last one. Minimizing hands the keyboard back the same way unmapping does, which is
-    /// the property the clipboard hand-over needs, and it costs the card a place in the window
-    /// switcher while it is down.
+    /// On Windows and under Wayland the window is unmapped, which is what hidden has always
+    /// meant. On X11 it is minimized instead, because unmapping there loses the position too
+    /// and minimizing keeps it. [`platform::closing`] carries the measurements that decided
+    /// both, including the one that sent Wayland back here: a minimized window is one this
+    /// compositor will not raise for a key press it never saw. Either way the keyboard goes
+    /// back to whatever had it, which is the property the clipboard hand-over needs.
     fn hide(&self) {
         self.arm_keys(false);
         self.persist_position();
@@ -969,8 +972,9 @@ impl Panel {
     /// Only where the number means something. Under Wayland a `Moved` event carries GTK3's
     /// answer to `gdk_window_get_position`, which is (0, 0) for every toplevel that ever
     /// exists, so a memory here would fill the settings file with an origin nobody dragged to
-    /// — see [`platform::remembers_position`]. The card still comes back where it was left
-    /// there; the compositor is what remembers, not this file.
+    /// — see [`platform::remembers_position`]. Nothing remembers the card's place there, and
+    /// the start-up log says so: a card may be dragged, and the next one opens wherever the
+    /// compositor decides to open it.
     fn remember(&self, x: i32, y: i32) {
         if !platform::remembers_position(self.system) {
             return;
@@ -1135,16 +1139,28 @@ fn report_window_style(window: &tauri::WebviewWindow) {
 /// Say how a card will leave the screen, and what that costs the person watching it.
 ///
 /// A start-up line rather than a comment, for the same reason the window style gets one: what
-/// closing the panel does is visible behaviour, and the two ways of doing it differ in
-/// something a user can see. Somebody who finds a minimized *Dile* in the window switcher
-/// should be able to find the sentence that says why, in the log they already have.
+/// closing the panel does is visible behaviour, and the ways of doing it differ in something a
+/// user can see. Somebody who finds a minimized *Dile* in the window switcher — or a card that
+/// keeps opening in the middle of the screen after they dragged it somewhere else — should be
+/// able to find the sentence that says why, in the log they already have.
+///
+/// Three lines for three outcomes, discriminated by both questions rather than one: *hidden*
+/// means the application puts the next card back where it wants it on Windows, and means
+/// nothing of the sort under Wayland, where the same word costs the drag memory outright.
 fn report_closing(system: WindowSystem) {
-    match platform::closing(system) {
-        Closing::Unmap => log::info!(
+    match (
+        platform::closing(system),
+        platform::remembers_position(system),
+    ) {
+        (Closing::Unmap, true) => log::info!(
             "panel window: window system {}, so a closed card is hidden and opens again where this application puts it",
             system.label()
         ),
-        Closing::Minimize => log::info!(
+        (Closing::Unmap, false) => log::info!(
+            "panel window: window system {}, so a closed card is hidden and every card opens where the compositor puts it — dragging one moves it for as long as it is up, and the next one starts wherever the desktop starts new windows, because closing it destroys the window that held the place and nothing here may ask for it back",
+            system.label()
+        ),
+        (Closing::Minimize, _) => log::info!(
             "panel window: window system {}, so a closed card is minimized rather than hidden and reopens where you dragged it — the costs are a minimized window in the switcher while it is closed, and a restart that starts the next one wherever the compositor likes",
             system.label()
         ),

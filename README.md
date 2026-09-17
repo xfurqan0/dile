@@ -278,12 +278,17 @@ Every one of these was measured on GNOME 50 under Wayland rather than read:
 
 1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
    for the terminal family, and no "that window is gone, so I did not paste" guarantee.
-2. **The first card lands where the compositor puts it**, not top-centre — and then it stays
-   where you drag it. `xdg-shell` has no global coordinate space, and the protocol that would
-   place a HUD is not available on GNOME, so the per-monitor drag memory does nothing here; a
-   closed card is minimized rather than hidden instead, which is what keeps it in place. Two
-   costs: while a card is closed there is a minimized Dile window in the switcher, and a
-   restart starts the next one wherever the compositor likes.
+2. **Every card opens where the compositor puts it**, which on GNOME means the middle of the
+   screen, not top-centre. You can drag one, and it stays where you dragged it for as long as
+   it is up; the next one starts in the middle again. `xdg-shell` has no global coordinate
+   space, the protocol that would place a HUD is not available on GNOME, and closing the card
+   destroys the window that was holding the place. Keeping that window alive and minimizing it
+   instead was tried, and it is worse: this compositor will raise a window it can see, but
+   ignores the same request for a minimized one, so the card stops coming back at all. **The
+   position memory works on the X11 backend** — `GDK_BACKEND=x11`, which costs the sharpness of
+   fractional scaling and is not a setting in the application — and there a closed card is
+   minimized, reopens where you dragged it, and leaves a minimized Dile in the switcher while
+   it is down. On either backend, a restart starts the next card wherever the compositor likes.
 3. **The card takes the keyboard** while it is on screen. `focusable: false` has no Wayland
    equivalent — and that is what makes the copy work at all, because a client may set the
    clipboard only while it holds the keyboard.

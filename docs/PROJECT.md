@@ -363,22 +363,38 @@ The five limits of the feasibility work of 2026-09-15, every one of them measure
 
 1. **The target application cannot be named.** No "→ VS Code" on the card, no `Ctrl+Shift+V`
    for the terminal family, and no "that window is gone, so I did not paste" guarantee.
-2. **The first card of a run lands where the compositor puts it — and then it stays where you
-   drag it.** `xdg-shell` has no global coordinate space, and `zwlr_layer_shell_v1` — how a HUD
-   is placed elsewhere — GNOME does not advertise at all, so nothing can ask for top-centre and
-   the per-monitor drag memory is dead weight here. **Dragging was never the broken half.** What
-   lost the position was *closing* the card: `gtk_widget_hide` sends `xdg_toplevel.destroy`,
-   mutter answers a destroyed toplevel by destroying its window, and the replacement is placed
-   from scratch — into the middle of the screen, because `center-new-windows` is on. Measured on
-   the wire under Wayland, and measured as a number on the X11 backend where a client may read
-   its own coordinate: a window moved to (417, 733) came back from hide-and-show at
-   **(606, 570)**, the centre of that screen, and came back from minimize-and-present at
-   **(417, 733)**. So on Linux a closed card is **minimized rather than hidden**
-   (`platform::closing`, 2026-09-17), and it reopens where it was left for as long as the
-   application runs. Two costs, and the start-up log carries both: a closed panel is a minimized
-   window in the switcher and the overview — `skipTaskbar` has no Wayland equivalent either —
-   and a **restart** puts the first card back wherever the compositor likes, because no protocol
-   on this desktop carries a window's place across the process that owned it.
+2. **Under Wayland the panel opens in the middle of the screen on every trigger, and nothing
+   remembers where it was dragged to. The position memory works on the X11 backend.**
+   `xdg-shell` has no global coordinate space, and `zwlr_layer_shell_v1` — how a HUD is placed
+   elsewhere — GNOME does not advertise at all, so nothing can ask for top-centre. **Dragging
+   was never the broken half**: what loses the position is *closing* the card, because
+   `gtk_widget_hide` sends `xdg_toplevel.destroy`, mutter answers a destroyed toplevel by
+   destroying its window, and the replacement is placed from scratch — into the middle of the
+   screen, because `center-new-windows` is on.
+   - **Minimizing instead was tried, shipped for a day and taken back out**
+     (`platform::closing`, 2026-09-17). Keeping the window alive is only half a round trip; the
+     other half is the compositor agreeing to raise it, and mutter will not. With another
+     application focused — the only state a trigger read off an evdev device can fire in, because
+     the compositor never saw the key — the same `xdg_activation_v1.activate` gets a `configure`
+     carrying *activated* on a **mapped** surface and **nothing at all** on a **minimized** one.
+     The card stayed down and the next right Ctrl did nothing anyone could see. The token is why:
+     with no input serial to prove itself with, GTK3 sends `set_serial(0, seat)` and a token
+     ending `_TIME0`, and `gtk_window_present_with_time` does not help, because GDK3's Wayland
+     backend never puts an X11-style timestamp on the wire.
+   - **Staying mapped and merely invisible** would keep the place *and* raise — raising a mapped
+     window does work — but it cannot be built here: GDK3 implements neither `set_opacity` nor
+     `set_keep_above` on its Wayland backend (both exist for X11 and for Broadway, and neither is
+     a protocol request), so a panel that is never unmapped is a panel that is never off screen.
+   - **X11 keeps the memory**, and there the round trip is a number rather than an inference: a
+     window moved to (417, 733) came back from hide-and-show at **(606, 570)**, the centre of
+     that screen, and came back from minimize-and-present at **(417, 733)**. So the X11 backend
+     minimizes, reopens where it was dragged to for as long as the application runs, and pays a
+     minimized *Dile* in the switcher while a card is closed — `skipTaskbar` has no Wayland
+     equivalent either. There is **no switch in the settings window** for this and there is not
+     going to be one: it is the environment variable `GDK_BACKEND=x11`, it costs the sharpness
+     of fractional scaling, and every clipboard measurement in §9 was taken under Wayland.
+   - A **restart** starts the next card wherever the compositor likes on either backend, because
+     no protocol on this desktop carries a window's place across the process that owned it.
    `xdg-session-management-v1` is the one that would, and GNOME 50 ships it under an unstable
    name behind a debug switch, for restoring a session rather than for showing a window again.
 3. **The card cannot refuse the focus.** `focusable: false` has no Wayland equivalent, so the

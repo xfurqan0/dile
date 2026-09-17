@@ -48,20 +48,29 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- **The panel reopens where you dragged it, on Linux.** Dragging the card worked all along;
-  closing it was what threw the position away. `gtk_widget_hide` sends `xdg_toplevel.destroy`
-  under Wayland, mutter answers a destroyed toplevel by destroying its window, and the next card
-  is placed from scratch — in the middle of the screen, because `center-new-windows` is on. A
-  closed card is now **minimized** instead, which keeps the window alive and its place with it,
-  and it comes back by asking the compositor to activate it. Measured on the wire, and as a
-  number on the X11 backend where a client may read its own coordinate: a window moved to
-  (417, 733) came back from hide-and-show at the centre of the screen and from
-  minimize-and-present at (417, 733). **Two costs, both named in the start-up log**: while a
-  card is closed there is a minimized Dile window in the switcher and the overview —
-  `skipTaskbar` has no Wayland equivalent — and a restart still opens the first card wherever
-  the compositor likes, because nothing on this desktop carries a window's place across the
-  process that owned it. Windows is untouched: a card there is hidden and shown as it always
-  was, and its position is still remembered per monitor in `settings.json`.
+- **The panel reopens where you dragged it on the Linux X11 backend — and under Wayland it
+  opens in the middle of the screen every time, which is the honest limit rather than a bug
+  left alone.** Dragging the card worked all along; closing it was what threw the position
+  away. `gtk_widget_hide` sends `xdg_toplevel.destroy`, mutter answers a destroyed toplevel by
+  destroying its window, and the next card is placed from scratch — in the middle of the
+  screen, because `center-new-windows` is on. Minimizing the card instead keeps the window
+  alive and its place with it, and on **X11** that is what now happens: measured as a number
+  there, a window moved to (417, 733) came back from hide-and-show at the centre of the screen
+  and from minimize-and-present at (417, 733). The cost is a minimized Dile in the switcher
+  while a card is closed.
+  - **Under Wayland the same trick does not work, and this release is where that was found
+    out.** Keeping the window alive is only half a round trip; the other half is the compositor
+    agreeing to raise it. With another application focused — the only state a trigger read off
+    an evdev device can fire in, because the compositor never saw the key — the same
+    `xdg_activation_v1.activate` gets a `configure` carrying *activated* on a **mapped** surface
+    and **nothing at all** on a **minimized** one. The card stayed down, and the second right
+    Ctrl of a run did nothing anyone could see. So a closed card is hidden there, as it was
+    before, and the start-up log says plainly that every card opens where the compositor puts it.
+  - The alternative of never unmapping the window — invisible rather than closed, which would
+    keep the place and still raise — is not available either: GDK3 implements neither
+    `set_opacity` nor `set_keep_above` on its Wayland backend.
+  - Windows is untouched: a card there is hidden and shown as it always was, and its position is
+    still remembered per monitor in `settings.json`.
 - **`scripts/build-host.sh` asks for the SPIR-V headers before it spends four minutes finding
   out.** `ggml-vulkan.cpp` includes `spirv/unified1/spirv.hpp` directly and never links the
   CMake target that carries its include directory, so a machine with the package config and

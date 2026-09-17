@@ -237,6 +237,9 @@ pub enum Closing {
     /// where it was dragged to, and a closed panel is a **minimized window rather than no
     /// window** — it is in the switcher and in the overview, which an unmapped one would not
     /// be. `skipTaskbar` cannot take it back out; that flag has no Wayland equivalent either.
+    ///
+    /// Only for a window system that was watched giving a minimized window back. That is a
+    /// real condition and not a formality: see [`closing`] for the compositor that does not.
     Minimize,
 }
 
@@ -253,10 +256,23 @@ pub enum Closing {
 ///   lives — and `hide()` is what ends that life. `gtk_widget_unmap` was measured too, and is
 ///   the same two requests.
 /// * `gtk_window_iconify` sends `xdg_toplevel.set_minimized` and destroys nothing: one
-///   `xdg_toplevel` survived two full rounds of minimize and restore. The restore is
-///   `xdg_activation_v1.activate` on the same surface — what `gtk_window_present` does, and
-///   what `tao` sends for `set_focus()` — and mutter answers it with a `configure` carrying
-///   *activated*. It works with `accept_focus` off, which is how this window is built.
+///   `xdg_toplevel` survived two full rounds of minimize and restore. **And that is where the
+///   first version of this function stopped, one measurement short.** Keeping the window alive
+///   is only half of a round trip; the other half is the compositor agreeing to put it back,
+///   and mutter does not. With another application holding the focus — which is the only state
+///   a trigger read off an evdev device can ever fire in, because the compositor never saw the
+///   key — the same `xdg_activation_v1.activate` gets two different answers:
+///   * on a **mapped** surface, `xdg_toplevel.configure` carrying *activated*, and the other
+///     window deactivated in the same round;
+///   * on a **minimized** surface, **nothing at all**. No configure, no state, no error. The
+///     card stays down and the next trigger does nothing a user can see.
+///
+///   The token is the reason. A trigger that arrives from outside the compositor leaves the
+///   process with no input serial to prove itself with, so GTK3 asks for one anyway and gets
+///   `xdg_activation_token_v1.set_serial(0, seat)` and a token ending `_TIME0` — and
+///   `gtk_window_present_with_time` does not help, because GDK3's Wayland backend never carries
+///   an X11-style timestamp onto the wire. Raising a window it can already see is something
+///   mutter will do on that token. Un-minimizing one is not.
 /// * On the X11 backend, where a client may read its own coordinate, the whole round trip is
 ///   a number rather than an inference: a window moved to (417, 733) came back from
 ///   hide-and-show at (606, 570), the centre of this screen, and came back from
@@ -264,11 +280,20 @@ pub enum Closing {
 ///   Wayland case, and the one backend where the question could be answered by reading a
 ///   coordinate instead of by reading the wire.
 ///
-/// So Linux minimizes, on either backend. X11 could instead put the card back itself — its
-/// `set_position` before a show was measured to work — but that path needs a monitor
-/// rectangle to clamp into, and [`unported`]'s `primary_monitor` has none to give on this
-/// platform. Minimizing needs no coordinate at all, which is why it is the answer for the
-/// backend that has numbers as well as for the one that does not.
+/// So the two Linux backends part company. **X11 minimizes**, because there the card was
+/// watched coming back. X11 could instead put the card back itself — its `set_position` before
+/// a show was measured to work — but that path needs a monitor rectangle to clamp into, and
+/// [`unported`]'s `primary_monitor` has none to give on this platform; minimizing needs no
+/// coordinate at all.
+///
+/// **Wayland unmaps**, and pays the price named in [`remembers_position`]: every card opens
+/// where the compositor puts it, which on a GNOME with `center-new-windows` on is the middle
+/// of the screen. That is a worse card than one that reopens where it was dragged to, and a
+/// far better one than a card that does not appear. Staying mapped and merely turning the
+/// window invisible would keep the place *and* raise — the first of the two answers above says
+/// so — but it cannot be done here either: GDK3 implements neither `set_opacity` nor
+/// `set_keep_above` on its Wayland backend (both exist for X11 and for Broadway and neither is
+/// a protocol request), so a panel that is never unmapped is a panel that is never off screen.
 ///
 /// Windows unmaps, as it always has: there a position is the application's own to keep,
 /// [`remembers_position`] is true, and a minimized panel would put a taskbar entry on screen
@@ -276,9 +301,10 @@ pub enum Closing {
 #[must_use]
 pub const fn closing(system: WindowSystem) -> Closing {
     match system {
-        WindowSystem::Wayland | WindowSystem::X11 => Closing::Minimize,
-        // The conservative answer, and the one every desktop understands.
-        WindowSystem::Windows | WindowSystem::Other => Closing::Unmap,
+        WindowSystem::X11 => Closing::Minimize,
+        // The conservative answer, and the one every desktop understands — including the one
+        // that will raise a window it can see and ignore a request to raise one it cannot.
+        WindowSystem::Windows | WindowSystem::Wayland | WindowSystem::Other => Closing::Unmap,
     }
 }
 
@@ -293,6 +319,11 @@ pub const fn closing(system: WindowSystem) -> Closing {
 ///
 /// False there rather than merely unused, so that the day a monitor rectangle does arrive on
 /// Linux the memory does not quietly start recording zeroes.
+///
+/// Under Wayland this is now the whole of the answer rather than half of it. While a closed
+/// card was minimized, the compositor kept the place this file could not; [`closing`] says why
+/// that had to stop, and the honest consequence is that **on Wayland nothing remembers** — the
+/// card opens where the compositor puts it, every time.
 #[must_use]
 pub const fn remembers_position(system: WindowSystem) -> bool {
     match system {
@@ -375,13 +406,14 @@ mod tests {
     fn every_window_system_answers_both_questions() {
         // The table, written out, because the two questions are **independent** and the first
         // draft of this test assumed they were not. X11 is the case that proves it: a
-        // coordinate there is a real number, so the position is worth remembering — and the
-        // card is still minimized rather than unmapped, because putting one back needs a
-        // monitor rectangle Linux has none of. What the two have in common is only the
-        // subject, not the answer.
+        // coordinate there is a real number, so the position is worth remembering — and a
+        // card there is minimized, because a minimized window on that backend comes back when
+        // it is asked to. Wayland is the case that proves the point the other way round: a
+        // card there is unmapped and its place is forgotten, and both halves of that are the
+        // same measurement.
         let table = [
             (WindowSystem::Windows, Closing::Unmap, true),
-            (WindowSystem::Wayland, Closing::Minimize, false),
+            (WindowSystem::Wayland, Closing::Unmap, false),
             (WindowSystem::X11, Closing::Minimize, true),
             (WindowSystem::Other, Closing::Unmap, false),
         ];
@@ -401,31 +433,45 @@ mod tests {
     }
 
     #[test]
-    fn a_card_is_never_left_with_nobody_keeping_its_place() {
-        // The invariant that does hold across the table above: where this application does
-        // not remember a position, the window is kept alive so that the compositor can. The
-        // one exception is deliberate and is named here rather than hidden in the `match` —
-        // `Other` is a desktop nothing has measured, and it keeps the behaviour every build
-        // had before this package instead of being handed a fix nobody tried there.
+    fn a_card_is_only_minimized_where_a_minimized_card_was_seen_to_come_back() {
+        // The invariant this table really rests on, and the one the package before it got
+        // wrong: **a way of closing a card is only allowed if opening it again was measured
+        // to work.** Keeping a window alive is worth nothing if the compositor will not raise
+        // it, and that is exactly what mutter does with a minimized surface — so X11 is the
+        // only row that may say `Minimize`, and it says it because the round trip was run
+        // there and the card came back.
         for system in EVERY {
-            if system == WindowSystem::Other {
-                continue;
+            if closing(system) == Closing::Minimize {
+                assert_eq!(
+                    system,
+                    WindowSystem::X11,
+                    "{system:?} minimizes a card nobody has watched come back"
+                );
             }
-            assert!(
-                remembers_position(system) || closing(system) == Closing::Minimize,
-                "{system:?} forgets where the card was and lets the window die too"
-            );
         }
     }
 
     #[test]
-    fn linux_minimizes_on_both_of_its_backends() {
-        // Measured, and the reason is in `closing`: `gtk_widget_hide` destroys the toplevel
-        // on Wayland, and on X11 the position is lost too — (417, 733) came back as
-        // (606, 570). The X11 answer is deliberately not "unmap and put it back", because
-        // putting it back needs a monitor rectangle this platform does not have.
-        assert_eq!(closing(WindowSystem::Wayland), Closing::Minimize);
+    fn wayland_unmaps_because_a_minimized_card_never_comes_back_there() {
+        // The measurement is in `closing`: with another application focused, mutter answers
+        // `xdg_activation_v1.activate` on a **mapped** surface with a `configure` carrying
+        // *activated*, and answers the same request on a **minimized** one with nothing at
+        // all. A card closed with `set_minimized` therefore stays closed, which is the fault
+        // this replaces. Unmapping costs the dragged position, which `remembers_position`
+        // already says is not readable here anyway.
+        assert_eq!(closing(WindowSystem::Wayland), Closing::Unmap);
+        assert!(!remembers_position(WindowSystem::Wayland));
+    }
+
+    #[test]
+    fn x11_still_minimizes_because_there_the_card_does_come_back() {
+        // The same round trip on the other backend, where a client may read its own
+        // coordinate: (417, 733) came back from hide-and-show at (606, 570), the centre of
+        // the screen, and came back from minimize-and-present at (417, 733). The X11 answer
+        // is deliberately not "unmap and put it back", because putting it back needs a
+        // monitor rectangle this platform does not have.
         assert_eq!(closing(WindowSystem::X11), Closing::Minimize);
+        assert!(remembers_position(WindowSystem::X11));
     }
 
     #[test]
